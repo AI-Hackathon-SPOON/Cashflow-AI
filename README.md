@@ -46,8 +46,8 @@ This project is an **AI-powered Streamlit application** designed to help finance
 ## ⚙️ Installation
 1. Clone the repository:
    ```bash
-   git clone https://github.com/your-username/finance-fraud-detection.git
-   cd finance-fraud-detection
+   git clone git@github.com:AI-Hackathon-SPOON/Cashflow-AI.git
+   cd Cashflow-AI
    ```
 2. Install dependencies:
    ```bash
