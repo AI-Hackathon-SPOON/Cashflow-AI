@@ -12,21 +12,72 @@ import streamlit.components.v1 as components
 st.set_page_config(page_title="Cashflow Fraud Monitor", layout="wide")
 
 FIELD_ALIASES = {
-    "transaction_id": ["transaction_id", "txn_id", "tx_id", "id", "reference", "ref"],
-    "timestamp": ["timestamp", "date", "datetime", "time", "created_at", "txn_date"],
-    "source_account": ["source", "from", "from_account", "sender", "payer", "debit_account"],
-    "destination_account": ["destination", "to", "to_account", "receiver", "beneficiary", "credit_account"],
-    "amount": ["amount", "value", "amt", "transaction_amount", "sum"],
+    "transaction_id": [
+        "transaction_id",
+        "txn_id",
+        "tx_id",
+        "id",
+        "reference",
+        "ref",
+        "transaction_number",
+        "transaction_reference",
+        "edge_id",
+    ],
+    "timestamp": ["timestamp", "date", "datetime", "time", "created_at", "txn_date", "payment_date"],
+    "source_account": [
+        "source",
+        "from",
+        "from_account",
+        "sender",
+        "payer",
+        "debit_account",
+        "source_id",
+    ],
+    "destination_account": [
+        "destination",
+        "to",
+        "to_account",
+        "receiver",
+        "beneficiary",
+        "credit_account",
+        "target_id",
+    ],
+    "amount": ["amount", "value", "amt", "transaction_amount", "sum", "total_amount", "balance_due"],
     "currency": ["currency", "ccy", "curr", "iso_currency"],
-    "channel": ["channel", "method", "payment_method", "type", "rail"],
-    "description": ["description", "memo", "note", "narration", "details"],
+    "channel": [
+        "channel",
+        "method",
+        "payment_method",
+        "type",
+        "rail",
+        "flow_direction",
+        "nature_invoice",
+        "node_type",
+    ],
+    "description": [
+        "description",
+        "memo",
+        "note",
+        "narration",
+        "details",
+        "organization_name",
+        "supplier_name",
+    ],
 }
 
-ALIAS_LOOKUP = {
-    re.sub(r"[^a-z0-9]", "", alias.lower()): canonical
-    for canonical, aliases in FIELD_ALIASES.items()
-    for alias in aliases
-}
+# Order used for mapping UI and session_state widget keys.
+MAPPING_CANONICAL_FIELDS: list[tuple[str, str]] = [
+    ("transaction_id", "Transaction ID"),
+    ("timestamp", "Timestamp / date"),
+    ("source_account", "Source account"),
+    ("destination_account", "Destination account"),
+    ("amount", "Amount"),
+    ("currency", "Currency"),
+    ("channel", "Channel / type"),
+    ("description", "Description"),
+]
+
+AUTO_COLUMN_LABEL = "(Auto-detect from column names)"
 
 
 def normalize_key(key: str) -> str:
@@ -67,17 +118,42 @@ def parse_timestamp(value: Any) -> pd.Timestamp:
     return parsed
 
 
-def map_record_to_internal(record: dict[str, Any], index: int) -> tuple[dict[str, Any] | None, str | None]:
+def map_record_to_internal(
+    record: dict[str, Any],
+    index: int,
+    column_mapping: dict[str, str] | None = None,
+) -> tuple[dict[str, Any] | None, str | None]:
     if not isinstance(record, dict):
         return None, "Record is not an object."
 
-    normalized_record = {normalize_key(str(k)): v for k, v in record.items()}
     mapped: dict[str, Any] = {}
+    if column_mapping:
+        for canonical, source_col in column_mapping.items():
+            if not source_col or source_col == AUTO_COLUMN_LABEL:
+                continue
+            if source_col not in record:
+                continue
+            value = record.get(source_col)
+            if value not in (None, ""):
+                mapped[canonical] = value
 
-    for key, value in normalized_record.items():
-        canonical = ALIAS_LOOKUP.get(key)
-        if canonical and canonical not in mapped and value not in (None, ""):
-            mapped[canonical] = value
+    col_norm = {str(k): normalize_key(str(k)) for k in record}
+    for canonical, aliases in FIELD_ALIASES.items():
+        if canonical in mapped:
+            continue
+        for alias in aliases:
+            target = normalize_key(alias)
+            if not target:
+                continue
+            for col_name, col_norm_key in col_norm.items():
+                if col_norm_key != target:
+                    continue
+                value = record.get(col_name)
+                if value not in (None, ""):
+                    mapped[canonical] = value
+                    break
+            if canonical in mapped:
+                break
 
     amount = parse_float(mapped.get("amount"))
     if amount is None:
@@ -113,12 +189,15 @@ def map_record_to_internal(record: dict[str, Any], index: int) -> tuple[dict[str
     return internal, None
 
 
-def normalize_transactions(raw_records: list[dict[str, Any]]) -> tuple[list[dict[str, Any]], list[dict[str, Any]]]:
+def normalize_transactions(
+    raw_records: list[dict[str, Any]],
+    column_mapping: dict[str, str] | None = None,
+) -> tuple[list[dict[str, Any]], list[dict[str, Any]]]:
     normalized: list[dict[str, Any]] = []
     rejected: list[dict[str, Any]] = []
 
     for index, record in enumerate(raw_records, start=1):
-        internal, error = map_record_to_internal(record, index=index)
+        internal, error = map_record_to_internal(record, index=index, column_mapping=column_mapping)
         if error:
             rejected.append({"index": index, "error": error, "raw_record": record})
             continue
@@ -127,9 +206,63 @@ def normalize_transactions(raw_records: list[dict[str, Any]]) -> tuple[list[dict
     return normalized, rejected
 
 
-def parse_csv_records(csv_bytes: bytes) -> list[dict[str, Any]]:
+def detect_csv_header_row_index(lines: list[str], min_nonempty: int = 3) -> int:
+    for i, line in enumerate(lines):
+        if not line.strip():
+            continue
+        try:
+            row = next(csv.reader([line]))
+        except csv.Error:
+            continue
+        nonempty = sum(1 for cell in row if str(cell).strip())
+        if nonempty >= min_nonempty:
+            return i
+    return 0
+
+
+def csv_text_and_header_slice(csv_bytes: bytes) -> tuple[str, int]:
     text = csv_bytes.decode("utf-8-sig")
-    reader = csv.DictReader(io.StringIO(text))
+    lines = text.splitlines()
+    idx = detect_csv_header_row_index(lines)
+    remainder = "\n".join(lines[idx:]) if lines else ""
+    return remainder, idx
+
+
+def peek_csv_fieldnames(csv_bytes: bytes) -> list[str]:
+    remainder, _ = csv_text_and_header_slice(csv_bytes)
+    if not remainder.strip():
+        return []
+    reader = csv.DictReader(io.StringIO(remainder))
+    names = reader.fieldnames or []
+    return [str(n) for n in names if n is not None and str(n).strip()]
+
+
+def suggest_column_mapping(headers: list[str]) -> dict[str, str | None]:
+    """Pick a source column per canonical field using normalized alias equality."""
+    headers_norm = {h: normalize_key(h) for h in headers}
+    suggested: dict[str, str | None] = {}
+    for canonical, _ in MAPPING_CANONICAL_FIELDS:
+        aliases = FIELD_ALIASES.get(canonical, [])
+        chosen: str | None = None
+        for alias in aliases:
+            target = normalize_key(alias)
+            if not target:
+                continue
+            for header, hn in headers_norm.items():
+                if hn == target:
+                    chosen = header
+                    break
+            if chosen:
+                break
+        suggested[canonical] = chosen
+    return suggested
+
+
+def parse_csv_records(csv_bytes: bytes) -> list[dict[str, Any]]:
+    remainder, _ = csv_text_and_header_slice(csv_bytes)
+    if not remainder.strip():
+        return []
+    reader = csv.DictReader(io.StringIO(remainder))
     return [row for row in reader if any(str(v).strip() for v in row.values())]
 
 
@@ -434,6 +567,15 @@ def append_records(new_records: list[dict[str, Any]], source_name: str) -> None:
     st.success(f"Added {len(new_records)} record(s) from {source_name}.")
 
 
+def explicit_column_mapping_from_session() -> dict[str, str] | None:
+    mapping: dict[str, str] = {}
+    for canonical, _ in MAPPING_CANONICAL_FIELDS:
+        choice = st.session_state.get(f"colmap_select_{canonical}", AUTO_COLUMN_LABEL)
+        if choice and choice != AUTO_COLUMN_LABEL:
+            mapping[canonical] = choice
+    return mapping or None
+
+
 def render_ingestion_panel() -> None:
     st.subheader("1) Ingest transaction data")
     st.caption("Load data in different formats. Everything gets mapped into one internal transaction schema.")
@@ -447,6 +589,47 @@ def render_ingestion_panel() -> None:
 
     st.markdown("### File-based inputs")
     csv_file = st.file_uploader("Upload CSV", type=["csv"], key="csv_upload")
+
+    with st.expander("CSV column mapping", expanded=False):
+        st.caption(
+            "Map each **internal** field to a column from your CSV (exact header name). "
+            "Leave a field on “Auto-detect” to infer it from known aliases (including HKT-style exports). "
+            "Leading blank rows before the header row are skipped automatically."
+        )
+        csv_headers: list[str] = []
+        if csv_file is not None:
+            try:
+                csv_headers = peek_csv_fieldnames(csv_file.getvalue())
+            except Exception as exc:
+                st.error(f"Could not read CSV headers: {exc}")
+
+        if csv_headers:
+            st.markdown(f"**Detected columns** ({len(csv_headers)}): `{', '.join(csv_headers[:12])}`" + (" …" if len(csv_headers) > 12 else ""))
+            if st.button("Fill suggestions from this CSV", key="suggest_csv_mapping"):
+                suggestions = suggest_column_mapping(csv_headers)
+                for canonical, _ in MAPPING_CANONICAL_FIELDS:
+                    pick = suggestions.get(canonical)
+                    st.session_state[f"colmap_select_{canonical}"] = pick if pick else AUTO_COLUMN_LABEL
+                st.rerun()
+        else:
+            st.info("Upload a CSV above to list its columns and fill suggestions.")
+
+        orphans: list[str] = []
+        for canonical, _ in MAPPING_CANONICAL_FIELDS:
+            v = st.session_state.get(f"colmap_select_{canonical}", AUTO_COLUMN_LABEL)
+            if v and v != AUTO_COLUMN_LABEL and v not in csv_headers:
+                orphans.append(v)
+        option_list = [AUTO_COLUMN_LABEL] + sorted(set(csv_headers) | set(orphans))
+        grid = st.columns(2)
+        for i, (canonical, label) in enumerate(MAPPING_CANONICAL_FIELDS):
+            col = grid[i % 2]
+            with col:
+                st.selectbox(
+                    f"{label} ← file column",
+                    options=option_list,
+                    key=f"colmap_select_{canonical}",
+                )
+
     if st.button("Add CSV records", key="add_csv"):
         if csv_file is None:
             st.warning("Select a CSV file first.")
@@ -520,7 +703,8 @@ def render_analysis_panel(raw_records: list[dict[str, Any]]) -> None:
     st.subheader("2) Normalize, score, and visualize")
     st.caption("Input records are mapped into a canonical schema before fraud scoring.")
 
-    normalized_records, rejected_records = normalize_transactions(raw_records)
+    column_mapping = explicit_column_mapping_from_session()
+    normalized_records, rejected_records = normalize_transactions(raw_records, column_mapping=column_mapping)
     if rejected_records:
         st.warning(f"{len(rejected_records)} record(s) were rejected during mapping (usually missing amount).")
         with st.expander("See rejected records"):
@@ -600,6 +784,8 @@ def render_analysis_panel(raw_records: list[dict[str, Any]]) -> None:
 def main() -> None:
     if "raw_records" not in st.session_state:
         st.session_state.raw_records = []
+    for canonical, _ in MAPPING_CANONICAL_FIELDS:
+        st.session_state.setdefault(f"colmap_select_{canonical}", AUTO_COLUMN_LABEL)
 
     st.title("Cashflow Fraud Monitor")
     st.caption(
