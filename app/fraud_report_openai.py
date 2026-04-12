@@ -94,9 +94,8 @@ def generate_fraud_audit_report(
     payload_json = json.dumps(payload_for_model, ensure_ascii=False, indent=2)
     user_prompt = _build_user_prompt(payload_json, non_empty_keys)
 
-    client = OpenAI(api_key=api_key, timeout=timeout)
-
     try:
+        client = OpenAI(api_key=api_key, timeout=timeout)
         response = client.chat.completions.create(
             model=model,
             temperature=0.25,
