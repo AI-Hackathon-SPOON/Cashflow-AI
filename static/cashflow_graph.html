@@ -1,0 +1,399 @@
+<div id="cashflow-root" class="cf-root"></div>
+<style>
+.cf-root { font-family: Inter, Arial, sans-serif; position: relative; width: 100%; }
+.cf-wrap { width: 100%; border: 1px solid #E2E8F0; border-radius: 10px; background: #FFFFFF; overflow: hidden; }
+.cf-wrap:fullscreen { border-radius: 0; display: flex; flex-direction: column; height: 100vh; width: 100vw; box-sizing: border-box; padding: 10px; background: #FFFFFF; }
+.cf-toolbar { display: flex; flex-wrap: wrap; align-items: center; gap: 8px; padding: 8px 10px; border-bottom: 1px solid #E2E8F0; background: #F8FAFC; }
+.cf-toolbar button { padding: 6px 12px; border-radius: 6px; border: 1px solid #CBD5E1; background: #FFFFFF; cursor: pointer; font-size: 12px; color: #0F172A; }
+.cf-toolbar button:hover { background: #E2E8F0; }
+.cf-toolbar button.cf-active { background: #1E293B; color: #F8FAFC; border-color: #1E293B; }
+.cf-toolbar .cf-sep { width: 1px; height: 22px; background: #CBD5E1; margin: 0 4px; }
+.cf-toolbar label.cf-range { display: flex; align-items: center; gap: 6px; font-size: 12px; color: #334155; }
+.cf-toolbar input[type="range"] { width: 110px; }
+.cf-toolbar .cf-hint { font-size: 11px; color: #64748B; margin-left: auto; flex: 1 1 140px; text-align: right; }
+.cf-chart { position: relative; height: 480px; width: 100%; }
+.cf-wrap:fullscreen .cf-chart { flex: 1; height: auto; min-height: 280px; }
+.cf-chart svg { display: block; width: 100%; height: 100%; background: #FFFFFF; }
+.cf-root .tooltip { position: absolute; pointer-events: none; background: rgba(15, 23, 42, 0.95); color: #FFFFFF; padding: 8px 10px; border-radius: 6px; font-size: 12px; opacity: 0; transition: opacity 0.12s ease-in-out; z-index: 99; max-width: 320px; }
+.cf-root .legend { margin-bottom: 8px; font-size: 12px; color: #334155; }
+.cf-root .empty { border: 1px dashed #CBD5E1; border-radius: 8px; padding: 20px; color: #64748B; margin: 12px; }
+.cf-detail-panel { border-top: 1px solid #E2E8F0; background: #F8FAFC; max-height: 200px; overflow: auto; font-size: 12px; color: #0F172A; }
+.cf-detail-panel .cf-d-head { padding: 8px 10px; font-weight: 600; border-bottom: 1px solid #E2E8F0; display: flex; justify-content: space-between; align-items: center; }
+.cf-detail-panel .cf-d-body { padding: 8px 10px; }
+.cf-detail-panel table { width: 100%; border-collapse: collapse; }
+.cf-detail-panel th, .cf-detail-panel td { text-align: left; padding: 4px 6px; border-bottom: 1px solid #E2E8F0; vertical-align: top; }
+.cf-detail-panel .tag-f { color: #B91C1C; font-weight: 600; }
+.cf-detail-panel .tag-ok { color: #15803D; }
+.cf-detail-panel button.cf-close { font-size: 11px; padding: 4px 8px; }
+</style>
+<div class="legend" id="cf-merge-legend">Arrows point <strong>source → destination</strong> (money flow). Click a node for transactions and fraud explanations. Toolbar: view mode, node size, zoom.</div>
+<script src="https://cdn.jsdelivr.net/npm/d3@7"></script>
+<script>
+const data = __GRAPH_DATA__;
+const root = document.getElementById("cashflow-root");
+const nodeDetails = data.node_details || {};
+
+function truncateLabel(s, maxLen) {
+  maxLen = maxLen || 24;
+  if (!s) return "";
+  return s.length > maxLen ? s.slice(0, maxLen - 1) + "\u2026" : s;
+}
+
+function nodeTitle(d) {
+  const lab = (d.label && String(d.label).trim()) || d.id;
+  if (d.merged_accounts && d.merged_accounts.length > 1) {
+    return lab + " (" + d.merged_accounts.length + " accounts)";
+  }
+  if (lab === String(d.id)) return lab;
+  return lab + " (" + d.id + ")";
+}
+
+function escapeHtml(s) {
+  return String(s)
+    .replace(/&/g, "&amp;")
+    .replace(/</g, "&lt;")
+    .replace(/>/g, "&gt;")
+    .replace(/"/g, "&quot;");
+}
+
+function showNodeDetailPanel(nodeDatum) {
+  const panel = document.getElementById("cf-detail-panel");
+  const body = document.getElementById("cf-detail-body");
+  const title = document.getElementById("cf-detail-title");
+  if (!panel || !body || !title) return;
+  title.textContent = nodeTitle(nodeDatum);
+  const rows = nodeDetails[nodeDatum.id] || [];
+  let pre = "";
+  if (nodeDatum.merged_accounts && nodeDatum.merged_accounts.length > 1) {
+    pre =
+      "<p style='margin:0 0 8px 0;font-size:11px;color:#475569;'>Merged technical account ids: <code>" +
+      escapeHtml(nodeDatum.merged_accounts.slice(0, 12).join(", ")) +
+      (nodeDatum.merged_accounts.length > 12 ? ", …" : "") +
+      "</code></p>";
+  }
+  if (rows.length === 0) {
+    body.innerHTML = pre + "<p>No individual transactions in the filtered graph for this account (or limit reached).</p>";
+  } else {
+    let html = "<table><thead><tr><th>When</th><th>Dir</th><th>Counterparty</th><th>Amount</th><th>Fraud</th><th>Explanation</th></tr></thead><tbody>";
+    rows.forEach(function (r) {
+      const flag = r.is_flagged ? '<span class="tag-f">Yes</span>' : '<span class="tag-ok">No</span>';
+      html += "<tr><td>" + escapeHtml(r.timestamp) + "</td><td>" + escapeHtml(r.direction) + "</td><td>" + escapeHtml(r.counterparty) + "</td><td>" + escapeHtml(String(r.amount)) + " " + escapeHtml(r.currency || "") + "</td><td>" + flag + " (" + escapeHtml(String(r.fraud_score)) + ")</td><td>" + escapeHtml(r.fraud_reasons) + "</td></tr>";
+    });
+    html += "</tbody></table>";
+    body.innerHTML = pre + html;
+  }
+  panel.style.display = "block";
+}
+
+function hideNodeDetailPanel() {
+  const panel = document.getElementById("cf-detail-panel");
+  if (panel) panel.style.display = "none";
+}
+
+if (!data.links || data.links.length === 0) {
+  root.innerHTML = '<div class="empty">Add transactions that include source and destination accounts to render the graph.</div>';
+} else {
+  const leg = document.getElementById("cf-merge-legend");
+  if (leg && data.merge_applied) {
+    leg.innerHTML +=
+      "<br/><em>Organization merge: " +
+      (data.merged_entity_groups || 0) +
+      " group(s) of accounts sharing the same organization name are one node. Accounts with unique names stay separate.</em>";
+  }
+  const fullNodes = data.nodes;
+  const fullLinks = data.links;
+  let viewMode = "normal";
+  let nodeRadius = Number(data.node_radius) || 13;
+  let collisionR = Number(data.collision_radius) || Math.max(nodeRadius * 1.95, nodeRadius + 10);
+  let simulation = null;
+  let svg = null;
+  let zoom = null;
+  let gRoot = null;
+  let linkSelection = null;
+  let width = 920;
+  let height = 560;
+  let dragMoved = false;
+
+  const wrap = d3.select(root).append("div").attr("class", "cf-wrap").attr("id", "cf-graph-wrap");
+  const toolbar = wrap.append("div").attr("class", "cf-toolbar");
+
+  function resetZoom() {
+    if (svg && zoom) svg.transition().duration(220).call(zoom.transform, d3.zoomIdentity);
+  }
+
+  toolbar.append("button").attr("type", "button").attr("id", "cf-reset-zoom").text("Reset zoom").on("click", resetZoom);
+  toolbar.append("button").attr("type", "button").attr("id", "cf-fullscreen-btn").text("Fullscreen").on("click", () => {
+    const el = document.getElementById("cf-graph-wrap");
+    if (!document.fullscreenElement) {
+      if (el && el.requestFullscreen) el.requestFullscreen();
+    } else {
+      document.exitFullscreen();
+    }
+  });
+
+  toolbar.append("div").attr("class", "cf-sep");
+
+  const btnNormal = toolbar.append("button").attr("type", "button").text("Normal view").attr("class", "cf-active").on("click", () => {
+    viewMode = "normal";
+    btnNormal.classed("cf-active", true);
+    btnFraud.classed("cf-active", false);
+    mountChart();
+  });
+  const btnFraud = toolbar.append("button").attr("type", "button").text("Frauds only").on("click", () => {
+    viewMode = "frauds";
+    btnNormal.classed("cf-active", false);
+    btnFraud.classed("cf-active", true);
+    mountChart();
+  });
+
+  toolbar.append("div").attr("class", "cf-sep");
+
+  const rangeLab = toolbar.append("label").attr("class", "cf-range").text("Node size");
+  const rangeInput = rangeLab.append("input").attr("type", "range").attr("min", 6).attr("max", 34).attr("step", 1).attr("value", Math.round(nodeRadius));
+  rangeLab.append("span").attr("id", "cf-node-r-val").text(String(Math.round(nodeRadius)));
+
+  toolbar.append("span").attr("class", "cf-hint").text("Scroll = zoom | drag canvas = pan | drag node = move | click node = details");
+
+  const chart = wrap.append("div").attr("class", "cf-chart");
+  const tooltip = d3.select(root).append("div").attr("class", "tooltip");
+
+  const detailPanel = wrap.append("div").attr("id", "cf-detail-panel").attr("class", "cf-detail-panel").style("display", "none");
+  const dh = detailPanel.append("div").attr("class", "cf-d-head");
+  dh.append("span").attr("id", "cf-detail-title").text("Account");
+  dh.append("button").attr("type", "button").attr("class", "cf-close").text("Close").on("click", hideNodeDetailPanel);
+  detailPanel.append("div").attr("id", "cf-detail-body").attr("class", "cf-d-body");
+
+  rangeInput.on("input", function () {
+    nodeRadius = Number(this.value);
+    collisionR = Math.max(nodeRadius * 1.95, nodeRadius + 10);
+    d3.select("#cf-node-r-val").text(String(nodeRadius));
+    chart.selectAll("circle.graph-node-circle").attr("r", nodeRadius);
+    chart.selectAll("g.graph-node text").attr("x", nodeRadius + 4);
+    if (simulation) {
+      simulation.force("collision", d3.forceCollide().radius(collisionR));
+      simulation.alpha(0.28).restart();
+    }
+  });
+
+  function linksForView() {
+    if (viewMode === "frauds") {
+      return fullLinks.filter((d) => d.is_flagged).map((d) => Object.assign({}, d));
+    }
+    return fullLinks.map((d) => Object.assign({}, d));
+  }
+
+  function nodesForLinks(links) {
+    const idSet = new Set();
+    links.forEach((d) => {
+      idSet.add(d.source);
+      idSet.add(d.target);
+    });
+    return fullNodes.filter((n) => idSet.has(n.id)).map((d) => Object.assign({}, d));
+  }
+
+  function trimmedEndpoints(d, rS, rT) {
+    const sx = d.source.x;
+    const sy = d.source.y;
+    const tx = d.target.x;
+    const ty = d.target.y;
+    const dx = tx - sx;
+    const dy = ty - sy;
+    const len = Math.hypot(dx, dy) || 1e-6;
+    const ux = dx / len;
+    const uy = dy / len;
+    const padS = rS + 2;
+    const padT = rT + 12;
+    return { x1: sx + ux * padS, y1: sy + uy * padS, x2: tx - ux * padT, y2: ty - uy * padT };
+  }
+
+  function mountChart() {
+    hideNodeDetailPanel();
+    if (simulation) {
+      simulation.stop();
+      simulation = null;
+    }
+    chart.selectAll("*").remove();
+    linkSelection = null;
+
+    const linkData = linksForView();
+    const nodeData = nodesForLinks(linkData);
+    if (linkData.length === 0 || nodeData.length === 0) {
+      chart.append("div").attr("class", "empty").text(
+        viewMode === "frauds"
+          ? "No flagged flows in the current date subset. Try Normal view or widen the date filter."
+          : "No flows to display for the current filters."
+      );
+      svg = null;
+      zoom = null;
+      gRoot = null;
+      return;
+    }
+
+    const chartEl = chart.node();
+    width = Math.max(400, chartEl.clientWidth || 920);
+    height = Math.max(400, chartEl.clientHeight || 560);
+
+    svg = chart.append("svg")
+      .attr("viewBox", "0 0 " + width + " " + height)
+      .attr("preserveAspectRatio", "xMidYMid meet");
+
+    const defs = svg.append("defs");
+    defs.append("marker")
+      .attr("id", "cf-arrow")
+      .attr("viewBox", "0 -4 10 8")
+      .attr("refX", 9)
+      .attr("refY", 0)
+      .attr("markerWidth", 7)
+      .attr("markerHeight", 7)
+      .attr("orient", "auto")
+      .append("path")
+      .attr("d", "M0,-4L10,0L0,4Z")
+      .attr("fill", "#64748B");
+    defs.append("marker")
+      .attr("id", "cf-arrow-flag")
+      .attr("viewBox", "0 -4 10 8")
+      .attr("refX", 9)
+      .attr("refY", 0)
+      .attr("markerWidth", 7)
+      .attr("markerHeight", 7)
+      .attr("orient", "auto")
+      .append("path")
+      .attr("d", "M0,-4L10,0L0,4Z")
+      .attr("fill", "#DC2626");
+
+    gRoot = svg.append("g").attr("class", "zoom-layer");
+
+    zoom = d3.zoom()
+      .scaleExtent([0.12, 8])
+      .on("zoom", (event) => {
+        gRoot.attr("transform", event.transform);
+      });
+    svg.call(zoom);
+
+    const amounts = linkData.map((d) => Number(d.amount) || 0);
+    const minAmount = Math.max(1, Math.min(...amounts));
+    const maxAmount = Math.max(minAmount + 1, Math.max(...amounts));
+    const widthScale = d3.scaleSqrt().domain([minAmount, maxAmount]).range([1.5, 9]);
+
+    linkSelection = gRoot.append("g")
+      .attr("stroke-linecap", "round")
+      .selectAll("line")
+      .data(linkData)
+      .join("line")
+      .attr("stroke", (d) => (d.is_flagged ? "#DC2626" : "#64748B"))
+      .attr("stroke-opacity", 0.78)
+      .attr("stroke-width", (d) => widthScale(Math.max(1, Number(d.amount) || 0)))
+      .attr("marker-end", (d) => (d.is_flagged ? "url(#cf-arrow-flag)" : "url(#cf-arrow)"));
+
+    const dragBehavior = d3.drag()
+      .on("start", (event, d) => {
+        dragMoved = false;
+        if (!event.active) simulation.alphaTarget(0.3).restart();
+        d.fx = d.x;
+        d.fy = d.y;
+      })
+      .on("drag", (event, d) => {
+        dragMoved = true;
+        d.fx = event.x;
+        d.fy = event.y;
+      })
+      .on("end", (event, d) => {
+        if (!event.active) simulation.alphaTarget(0);
+        d.fx = null;
+        d.fy = null;
+        if (!dragMoved) {
+          showNodeDetailPanel(d);
+        }
+      });
+
+    const node = gRoot.append("g")
+      .selectAll("g")
+      .data(nodeData)
+      .join("g")
+      .attr("class", "graph-node")
+      .call(dragBehavior);
+
+    node.append("circle")
+      .attr("class", "graph-node-circle")
+      .attr("r", nodeRadius)
+      .attr("fill", (d) => (d.has_flagged_tx ? "#F59E0B" : "#2563EB"))
+      .attr("stroke", "#0F172A")
+      .attr("stroke-width", 1.1);
+
+    node.append("text")
+      .text((d) => truncateLabel((d.label && String(d.label).trim()) || d.id))
+      .attr("x", nodeRadius + 4)
+      .attr("y", 4)
+      .attr("font-size", 11)
+      .attr("fill", "#0F172A");
+
+    function linkTip(d) {
+      const s = typeof d.source === "object" ? d.source : nodeData.find((n) => n.id === d.source);
+      const t = typeof d.target === "object" ? d.target : nodeData.find((n) => n.id === d.target);
+      const sLab = s ? nodeTitle(s) : d.source;
+      const tLab = t ? nodeTitle(t) : d.target;
+      return "<strong>" + sLab + " \u2192 " + tLab + "</strong><br/>Amount: " + Number(d.amount).toLocaleString() + "<br/>Transactions: " + d.tx_count + "<br/>Flagged: " + d.flagged_tx;
+    }
+
+    linkSelection
+      .on("mousemove", (event, d) => {
+        tooltip
+          .style("opacity", 1)
+          .style("left", event.offsetX + 14 + "px")
+          .style("top", event.offsetY + 14 + "px")
+          .html(linkTip(d));
+      })
+      .on("mouseout", () => tooltip.style("opacity", 0));
+
+    node
+      .on("mousemove", (event, d) => {
+        tooltip
+          .style("opacity", 1)
+          .style("left", event.offsetX + 14 + "px")
+          .style("top", event.offsetY + 14 + "px")
+          .html("<strong>" + nodeTitle(d) + "</strong><br/>Linked to flagged flow: " + (d.has_flagged_tx ? "yes" : "no") + "<br/><em>Click for details</em>");
+      })
+      .on("mouseout", () => tooltip.style("opacity", 0));
+
+    simulation = d3.forceSimulation(nodeData)
+      .force("link", d3.forceLink(linkData).id((d) => d.id).distance(140).strength(0.18))
+      .force("charge", d3.forceManyBody().strength(-520))
+      .force("center", d3.forceCenter(width / 2, height / 2))
+      .force("collision", d3.forceCollide().radius(collisionR));
+
+    simulation.on("tick", () => {
+      linkSelection.each(function (d) {
+        const t = trimmedEndpoints(d, nodeRadius, nodeRadius);
+        d3.select(this).attr("x1", t.x1).attr("y1", t.y1).attr("x2", t.x2).attr("y2", t.y2);
+      });
+      node.attr("transform", (d) => "translate(" + d.x + "," + d.y + ")");
+    });
+
+    svg.call(zoom.transform, d3.zoomIdentity);
+  }
+
+  mountChart();
+
+  function reflowChart() {
+    if (!svg || !simulation) return;
+    const rect = chart.node().getBoundingClientRect();
+    const nw = Math.max(400, rect.width);
+    const nh = Math.max(320, rect.height);
+    if (Math.abs(nw - width) < 2 && Math.abs(nh - height) < 2) return;
+    width = nw;
+    height = nh;
+    svg.attr("viewBox", "0 0 " + width + " " + height);
+    simulation.force("center", d3.forceCenter(width / 2, height / 2));
+    simulation.alpha(0.22).restart();
+  }
+
+  document.addEventListener("fullscreenchange", () => {
+    const fsb = document.getElementById("cf-fullscreen-btn");
+    if (fsb) fsb.textContent = document.fullscreenElement ? "Exit fullscreen" : "Fullscreen";
+    window.setTimeout(reflowChart, 80);
+  });
+  window.addEventListener("resize", () => {
+    window.setTimeout(reflowChart, 120);
+  });
+}
+</script>
