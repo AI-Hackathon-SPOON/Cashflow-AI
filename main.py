@@ -2,6 +2,7 @@
 
 from __future__ import annotations
 
+import os
 from datetime import date
 from typing import Any
 
@@ -11,6 +12,8 @@ import streamlit.components.v1 as components
 
 from app.constants import AUTO_COLUMN_LABEL, MAPPING_CANONICAL_FIELDS
 from app.fraud_scoring import score_fraud_signals
+from app.fraud_report_openai import generate_fraud_audit_report
+from app.fraud_report_payload import build_categorized_fraud_alerts
 from app.graph import build_cashflow_graph_payload, filter_scored_df_by_graph_dates
 from app.graph_template import render_graph_html
 from app.ingestion import (
@@ -24,6 +27,20 @@ from app.ingestion import (
 )
 
 st.set_page_config(page_title="Cashflow Fraud Monitor", layout="wide")
+
+
+def _bootstrap_openai_api_key() -> None:
+    """Copy ``OPENAI_API_KEY`` from Streamlit secrets into ``os.environ`` if not already set."""
+    if os.environ.get("OPENAI_API_KEY", "").strip():
+        return
+    try:
+        if "OPENAI_API_KEY" not in st.secrets:
+            return
+        key = st.secrets["OPENAI_API_KEY"]
+    except Exception:
+        return
+    if key and str(key).strip():
+        os.environ["OPENAI_API_KEY"] = str(key).strip()
 
 
 def append_records(new_records: list[dict[str, Any]], source_name: str) -> None:
@@ -259,6 +276,32 @@ def render_analysis_panel(raw_records: list[dict[str, Any]]) -> None:
         mime="text/csv",
     )
 
+    st.markdown("### CFO audit report (OpenAI)")
+    st.caption(
+        "Uses **OPENAI_API_KEY** from the environment or `.streamlit/secrets.toml`. "
+        "Builds categories from **flagged** transactions, then asks the model for a Markdown report."
+    )
+    col_rep1, col_rep2 = st.columns([1, 2])
+    with col_rep1:
+        gen_clicked = st.button("Generate report", type="primary", key="cfo_generate_report")
+    with col_rep2:
+        if st.button("Clear report", key="cfo_clear_report"):
+            st.session_state.pop("cfo_report_md", None)
+            st.rerun()
+
+    if gen_clicked:
+        alerts = build_categorized_fraud_alerts(scored_df)
+        try:
+            with st.spinner("Calling OpenAI (gpt-4o)…"):
+                report_md = generate_fraud_audit_report(alerts)
+            st.session_state["cfo_report_md"] = report_md
+        except ValueError as exc:
+            st.error(str(exc))
+            st.info("Add `OPENAI_API_KEY` to `.streamlit/secrets.toml` or set it in your shell before `streamlit run`.")
+
+    if st.session_state.get("cfo_report_md"):
+        st.markdown(st.session_state["cfo_report_md"])
+
     st.markdown("### 3) D3.js cashflow graph")
 
     ts_min = scored_df["timestamp"].min()
@@ -321,6 +364,7 @@ def render_analysis_panel(raw_records: list[dict[str, Any]]) -> None:
 
 
 def main() -> None:
+    _bootstrap_openai_api_key()
     if "raw_records" not in st.session_state:
         st.session_state.raw_records = []
     for canonical, _ in MAPPING_CANONICAL_FIELDS:
