@@ -26,7 +26,7 @@
 .cf-detail-panel .tag-ok { color: #15803D; }
 .cf-detail-panel button.cf-close { font-size: 11px; padding: 4px 8px; }
 </style>
-<div class="legend">Arrows point <strong>source → destination</strong> (money flow). Click a node for transactions and fraud explanations. Toolbar: view mode, node size, zoom.</div>
+<div class="legend" id="cf-merge-legend">Arrows point <strong>source → destination</strong> (money flow). Click a node for transactions and fraud explanations. Toolbar: view mode, node size, zoom.</div>
 <script src="https://cdn.jsdelivr.net/npm/d3@7"></script>
 <script>
 const data = __GRAPH_DATA__;
@@ -41,7 +41,11 @@ function truncateLabel(s, maxLen) {
 
 function nodeTitle(d) {
   const lab = (d.label && String(d.label).trim()) || d.id;
-  return lab === String(d.id) ? lab : lab + " (" + d.id + ")";
+  if (d.merged_accounts && d.merged_accounts.length > 1) {
+    return lab + " (" + d.merged_accounts.length + " accounts)";
+  }
+  if (lab === String(d.id)) return lab;
+  return lab + " (" + d.id + ")";
 }
 
 function escapeHtml(s) {
@@ -59,8 +63,16 @@ function showNodeDetailPanel(nodeDatum) {
   if (!panel || !body || !title) return;
   title.textContent = nodeTitle(nodeDatum);
   const rows = nodeDetails[nodeDatum.id] || [];
+  let pre = "";
+  if (nodeDatum.merged_accounts && nodeDatum.merged_accounts.length > 1) {
+    pre =
+      "<p style='margin:0 0 8px 0;font-size:11px;color:#475569;'>Merged technical account ids: <code>" +
+      escapeHtml(nodeDatum.merged_accounts.slice(0, 12).join(", ")) +
+      (nodeDatum.merged_accounts.length > 12 ? ", …" : "") +
+      "</code></p>";
+  }
   if (rows.length === 0) {
-    body.innerHTML = "<p>No individual transactions in the filtered graph for this account (or limit reached).</p>";
+    body.innerHTML = pre + "<p>No individual transactions in the filtered graph for this account (or limit reached).</p>";
   } else {
     let html = "<table><thead><tr><th>When</th><th>Dir</th><th>Counterparty</th><th>Amount</th><th>Fraud</th><th>Explanation</th></tr></thead><tbody>";
     rows.forEach(function (r) {
@@ -68,7 +80,7 @@ function showNodeDetailPanel(nodeDatum) {
       html += "<tr><td>" + escapeHtml(r.timestamp) + "</td><td>" + escapeHtml(r.direction) + "</td><td>" + escapeHtml(r.counterparty) + "</td><td>" + escapeHtml(String(r.amount)) + " " + escapeHtml(r.currency || "") + "</td><td>" + flag + " (" + escapeHtml(String(r.fraud_score)) + ")</td><td>" + escapeHtml(r.fraud_reasons) + "</td></tr>";
     });
     html += "</tbody></table>";
-    body.innerHTML = html;
+    body.innerHTML = pre + html;
   }
   panel.style.display = "block";
 }
@@ -81,6 +93,13 @@ function hideNodeDetailPanel() {
 if (!data.links || data.links.length === 0) {
   root.innerHTML = '<div class="empty">Add transactions that include source and destination accounts to render the graph.</div>';
 } else {
+  const leg = document.getElementById("cf-merge-legend");
+  if (leg && data.merge_applied) {
+    leg.innerHTML +=
+      "<br/><em>Organization merge: " +
+      (data.merged_entity_groups || 0) +
+      " group(s) of accounts sharing the same organization name are one node. Accounts with unique names stay separate.</em>";
+  }
   const fullNodes = data.nodes;
   const fullLinks = data.links;
   let viewMode = "normal";
