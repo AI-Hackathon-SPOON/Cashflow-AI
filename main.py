@@ -242,9 +242,6 @@ def _render_step_map() -> None:
 
     st.divider()
 
-    with st.expander("Preview raw records (first 5)"):
-        st.json(raw[:5])
-
     bcol1, bcol2, _ = st.columns([1, 1, 3])
     with bcol1:
         if st.button("✅ Confirm & Process", type="primary", use_container_width=True):
@@ -257,6 +254,9 @@ def _render_step_map() -> None:
             st.session_state.pop("_csv_headers", None)
             st.session_state.pop("cfo_report_md", None)
             st.rerun()
+
+    with st.expander("Preview raw records (first 5)"):
+        st.json(raw[:5])
 
 
 # ---------------------------------------------------------------------------
@@ -307,7 +307,7 @@ def _render_step_analyze(raw_records: list[dict[str, Any]]) -> None:
 
     # Graph ---
     with tab_graph:
-        fc1, fc2, fc3, fc4 = st.columns([1.5, 1, 1, 0.8])
+        fc1, fc2, fc3 = st.columns([1.5, 1, 1])
         with fc1:
             date_mode_label = st.selectbox(
                 "Date filter",
@@ -332,15 +332,13 @@ def _render_step_analyze(raw_records: list[dict[str, Any]]) -> None:
                 "To", value=max_d, key="graph_date_to",
                 disabled=date_mode_label != "Between two dates",
             )
-        with fc4:
-            graph_node_radius = st.slider("Node size", 6, 34, 13, key="graph_node_radius")
 
         graph_df = filter_scored_df_by_graph_dates(scored_df, mode_key, d_from, d_to)
         if graph_df.empty:
             st.warning("No transactions match this date range.")
         else:
             st.caption(f"**{len(graph_df):,}** transactions in graph")
-            payload = build_cashflow_graph_payload(graph_df, node_radius=float(graph_node_radius))
+            payload = build_cashflow_graph_payload(graph_df)
             components.html(render_graph_html(payload), height=650, scrolling=False)
 
     # All transactions ---
@@ -386,9 +384,8 @@ def _render_step_analyze(raw_records: list[dict[str, Any]]) -> None:
                 with st.spinner("Calling OpenAI (gpt-4o)…"):
                     report_md = generate_fraud_audit_report(alerts)
                 st.session_state["cfo_report_md"] = report_md
-            except ValueError as exc:
-                st.error(str(exc))
-                st.info("Add `OPENAI_API_KEY` to `.streamlit/secrets.toml` or set it in your shell.")
+            except ValueError:
+                st.warning("The AI report service is not configured. Please contact your administrator to enable this feature.")
 
         if st.session_state.get("cfo_report_md"):
             st.markdown(st.session_state["cfo_report_md"])

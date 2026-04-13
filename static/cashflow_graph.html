@@ -1,37 +1,69 @@
 <div id="cashflow-root" class="cf-root"></div>
 <style>
 .cf-root { font-family: Inter, Arial, sans-serif; position: relative; width: 100%; }
-.cf-wrap { width: 100%; border: 1px solid #E2E8F0; border-radius: 10px; background: #FFFFFF; overflow: hidden; }
+.cf-wrap { position: relative; width: 100%; border: 1px solid #E2E8F0; border-radius: 10px; background: #FFFFFF; overflow: hidden; }
 .cf-wrap:fullscreen { border-radius: 0; display: flex; flex-direction: column; height: 100vh; width: 100vw; box-sizing: border-box; padding: 10px; background: #FFFFFF; }
 .cf-toolbar { display: flex; flex-wrap: wrap; align-items: center; gap: 8px; padding: 8px 10px; border-bottom: 1px solid #E2E8F0; background: #F8FAFC; }
-.cf-toolbar button { padding: 6px 12px; border-radius: 6px; border: 1px solid #CBD5E1; background: #FFFFFF; cursor: pointer; font-size: 12px; color: #0F172A; }
+.cf-toolbar button { padding: 6px 12px; border-radius: 6px; border: 1px solid #CBD5E1; background: #FFFFFF; cursor: pointer; font-size: 12px; color: #0F172A; transition: all 0.15s; }
 .cf-toolbar button:hover { background: #E2E8F0; }
 .cf-toolbar button.cf-active { background: #1E293B; color: #F8FAFC; border-color: #1E293B; }
 .cf-toolbar .cf-sep { width: 1px; height: 22px; background: #CBD5E1; margin: 0 4px; }
 .cf-toolbar label.cf-range { display: flex; align-items: center; gap: 6px; font-size: 12px; color: #334155; }
 .cf-toolbar input[type="range"] { width: 110px; }
-.cf-toolbar .cf-hint { font-size: 11px; color: #64748B; margin-left: auto; flex: 1 1 140px; text-align: right; }
 .cf-chart { position: relative; height: 480px; width: 100%; }
 .cf-wrap:fullscreen .cf-chart { flex: 1; height: auto; min-height: 280px; }
 .cf-chart svg { display: block; width: 100%; height: 100%; background: #FFFFFF; }
-.cf-root .tooltip { position: absolute; pointer-events: none; background: rgba(15, 23, 42, 0.95); color: #FFFFFF; padding: 8px 10px; border-radius: 6px; font-size: 12px; opacity: 0; transition: opacity 0.12s ease-in-out; z-index: 99; max-width: 320px; }
-.cf-root .legend { margin-bottom: 8px; font-size: 12px; color: #334155; }
+
+/* Tooltip */
+.cf-root .tooltip {
+  position: absolute; pointer-events: none;
+  background: rgba(15, 23, 42, 0.96); color: #FFFFFF;
+  padding: 10px 14px; border-radius: 8px; font-size: 12px;
+  opacity: 0; transition: opacity 0.12s ease-in-out;
+  z-index: 99; max-width: 420px; line-height: 1.55;
+  box-shadow: 0 4px 16px rgba(0,0,0,0.25);
+}
+.cf-root .tooltip table { width: 100%; border-collapse: collapse; margin-top: 6px; }
+.cf-root .tooltip th { text-align: left; padding: 2px 6px 2px 0; font-weight: 600; color: #94A3B8; font-size: 11px; border-bottom: 1px solid rgba(255,255,255,0.1); }
+.cf-root .tooltip td { padding: 3px 6px 3px 0; font-size: 11px; border-bottom: 1px solid rgba(255,255,255,0.06); }
+.cf-root .tooltip .flag-y { color: #FCA5A5; font-weight: 600; }
+.cf-root .tooltip .flag-n { color: #86EFAC; }
+
+/* Legend bar */
+.cf-legend { display: flex; flex-wrap: wrap; align-items: center; gap: 16px; padding: 6px 12px; border-bottom: 1px solid #E2E8F0; background: #FAFBFC; font-size: 11.5px; color: #475569; }
+.cf-legend-item { display: flex; align-items: center; gap: 5px; }
+.cf-legend-swatch { display: inline-block; width: 14px; height: 14px; border-radius: 50%; border: 1px solid rgba(0,0,0,0.15); flex-shrink: 0; }
+.cf-legend-line { display: inline-block; width: 28px; height: 0; border-top: 2px solid; flex-shrink: 0; }
+.cf-legend-line-bold { display: inline-block; width: 28px; height: 0; border-top: 3.5px solid; flex-shrink: 0; }
+
+/* Node detail panel — overlay anchored to bottom of .cf-wrap */
 .cf-root .empty { border: 1px dashed #CBD5E1; border-radius: 8px; padding: 20px; color: #64748B; margin: 12px; }
-.cf-detail-panel { border-top: 1px solid #E2E8F0; background: #F8FAFC; max-height: 200px; overflow: auto; font-size: 12px; color: #0F172A; }
-.cf-detail-panel .cf-d-head { padding: 8px 10px; font-weight: 600; border-bottom: 1px solid #E2E8F0; display: flex; justify-content: space-between; align-items: center; }
+.cf-detail-panel {
+  position: absolute; bottom: 0; left: 0; right: 0; z-index: 50;
+  background: rgba(248, 250, 252, 0.97); backdrop-filter: blur(6px);
+  border-top: 1px solid #E2E8F0;
+  max-height: 45%; overflow-y: auto;
+  font-size: 12px; color: #0F172A;
+  box-shadow: 0 -4px 12px rgba(0,0,0,0.08);
+}
+.cf-detail-panel .cf-d-head { position: sticky; top: 0; padding: 8px 10px; font-weight: 600; border-bottom: 1px solid #E2E8F0; background: rgba(248,250,252,0.98); display: flex; justify-content: space-between; align-items: center; z-index: 1; }
 .cf-detail-panel .cf-d-body { padding: 8px 10px; }
 .cf-detail-panel table { width: 100%; border-collapse: collapse; }
 .cf-detail-panel th, .cf-detail-panel td { text-align: left; padding: 4px 6px; border-bottom: 1px solid #E2E8F0; vertical-align: top; }
 .cf-detail-panel .tag-f { color: #B91C1C; font-weight: 600; }
 .cf-detail-panel .tag-ok { color: #15803D; }
-.cf-detail-panel button.cf-close { font-size: 11px; padding: 4px 8px; }
+.cf-detail-panel button.cf-close { font-size: 11px; padding: 4px 8px; border-radius: 4px; border: 1px solid #CBD5E1; background: #fff; cursor: pointer; }
+.node-label { pointer-events: none; font-weight: 500; }
 </style>
-<div class="legend" id="cf-merge-legend">Arrows point <strong>source → destination</strong> (money flow). Click a node for transactions and fraud explanations. Toolbar: view mode, node size, zoom.</div>
 <script src="https://cdn.jsdelivr.net/npm/d3@7"></script>
 <script>
 const data = __GRAPH_DATA__;
 const root = document.getElementById("cashflow-root");
 const nodeDetails = data.node_details || {};
+const edgeDetails = data.edge_details || {};
+
+const NODE_SCALE = 1.6;
+const ANIM_MS = 600;
 
 function truncateLabel(s, maxLen) {
   maxLen = maxLen || 24;
@@ -41,19 +73,44 @@ function truncateLabel(s, maxLen) {
 
 function nodeTitle(d) {
   const lab = (d.label && String(d.label).trim()) || d.id;
-  if (d.merged_accounts && d.merged_accounts.length > 1) {
-    return lab + " (" + d.merged_accounts.length + " accounts)";
-  }
+  if (d.merged_accounts && d.merged_accounts.length > 1) return lab + " (" + d.merged_accounts.length + " accts)";
   if (lab === String(d.id)) return lab;
   return lab + " (" + d.id + ")";
 }
 
 function escapeHtml(s) {
-  return String(s)
-    .replace(/&/g, "&amp;")
-    .replace(/</g, "&lt;")
-    .replace(/>/g, "&gt;")
-    .replace(/"/g, "&quot;");
+  return String(s).replace(/&/g, "&amp;").replace(/</g, "&lt;").replace(/>/g, "&gt;").replace(/"/g, "&quot;");
+}
+
+function linkId(d) {
+  const s = typeof d.source === "object" ? d.source.id : d.source;
+  const t = typeof d.target === "object" ? d.target.id : d.target;
+  return s + "||" + t;
+}
+
+function buildEdgeTooltipHtml(d) {
+  const sObj = typeof d.source === "object" ? d.source : null;
+  const tObj = typeof d.target === "object" ? d.target : null;
+  const sLab = sObj ? nodeTitle(sObj) : d.source;
+  const tLab = tObj ? nodeTitle(tObj) : d.target;
+  let html = "<strong>" + escapeHtml(sLab) + " &rarr; " + escapeHtml(tLab) + "</strong><br/>" +
+    "Total: <b>" + Number(d.amount).toLocaleString() + "</b> &middot; " +
+    d.tx_count + " txn(s) &middot; " +
+    (d.flagged_tx > 0 ? '<span class="flag-y">' + d.flagged_tx + " flagged</span>" : '<span class="flag-n">0 flagged</span>');
+  const rows = edgeDetails[linkId(d)] || [];
+  if (rows.length) {
+    html += "<table><thead><tr><th>ID</th><th>Date</th><th>Amount</th><th>Score</th><th>Flagged</th></tr></thead><tbody>";
+    rows.slice(0, 8).forEach(function (r) {
+      const ts = r.timestamp ? r.timestamp.replace("T", " ").slice(0, 19) : "";
+      const fl = r.is_flagged ? '<span class="flag-y">Yes</span>' : '<span class="flag-n">No</span>';
+      html += "<tr><td>" + escapeHtml(r.transaction_id) + "</td><td>" + escapeHtml(ts) + "</td><td>" +
+        escapeHtml(String(r.amount)) + " " + escapeHtml(r.currency || "") + "</td><td>" +
+        escapeHtml(String(r.fraud_score)) + "</td><td>" + fl + "</td></tr>";
+    });
+    html += "</tbody></table>";
+    if (rows.length > 8) html += "<div style='margin-top:4px;font-size:10px;color:#94A3B8;'>+" + (rows.length - 8) + " more</div>";
+  }
+  return html;
 }
 
 function showNodeDetailPanel(nodeDatum) {
@@ -65,14 +122,12 @@ function showNodeDetailPanel(nodeDatum) {
   const rows = nodeDetails[nodeDatum.id] || [];
   let pre = "";
   if (nodeDatum.merged_accounts && nodeDatum.merged_accounts.length > 1) {
-    pre =
-      "<p style='margin:0 0 8px 0;font-size:11px;color:#475569;'>Merged technical account ids: <code>" +
+    pre = "<p style='margin:0 0 8px;font-size:11px;color:#475569;'>Merged ids: <code>" +
       escapeHtml(nodeDatum.merged_accounts.slice(0, 12).join(", ")) +
-      (nodeDatum.merged_accounts.length > 12 ? ", …" : "") +
-      "</code></p>";
+      (nodeDatum.merged_accounts.length > 12 ? ", \u2026" : "") + "</code></p>";
   }
-  if (rows.length === 0) {
-    body.innerHTML = pre + "<p>No individual transactions in the filtered graph for this account (or limit reached).</p>";
+  if (!rows.length) {
+    body.innerHTML = pre + "<p>No transactions for this node in the current filter.</p>";
   } else {
     let html = "<table><thead><tr><th>When</th><th>Dir</th><th>Counterparty</th><th>Amount</th><th>Fraud</th><th>Explanation</th></tr></thead><tbody>";
     rows.forEach(function (r) {
@@ -84,316 +139,318 @@ function showNodeDetailPanel(nodeDatum) {
   }
   panel.style.display = "block";
 }
-
 function hideNodeDetailPanel() {
-  const panel = document.getElementById("cf-detail-panel");
-  if (panel) panel.style.display = "none";
+  const p = document.getElementById("cf-detail-panel");
+  if (p) p.style.display = "none";
 }
 
+/* ====== EMPTY GRAPH ====== */
 if (!data.links || data.links.length === 0) {
-  root.innerHTML = '<div class="empty">Add transactions that include source and destination accounts to render the graph.</div>';
+  root.innerHTML = '<div class="empty">Add transactions with source and destination accounts to render the graph.</div>';
 } else {
-  const leg = document.getElementById("cf-merge-legend");
-  if (leg && data.merge_applied) {
-    leg.innerHTML +=
-      "<br/><em>Organization merge: " +
-      (data.merged_entity_groups || 0) +
-      " group(s) of accounts sharing the same organization name are one node. Accounts with unique names stay separate.</em>";
-  }
-  const fullNodes = data.nodes;
-  const fullLinks = data.links;
-  let viewMode = "normal";
-  let nodeRadius = Number(data.node_radius) || 13;
-  let collisionR = Number(data.collision_radius) || Math.max(nodeRadius * 1.95, nodeRadius + 10);
-  let simulation = null;
-  let svg = null;
-  let zoom = null;
-  let gRoot = null;
-  let linkSelection = null;
-  let width = 920;
-  let height = 560;
-  let dragMoved = false;
 
-  const wrap = d3.select(root).append("div").attr("class", "cf-wrap").attr("id", "cf-graph-wrap");
-  const toolbar = wrap.append("div").attr("class", "cf-toolbar");
+/* ====== GRAPH SETUP (runs once, survives view switches) ====== */
+const allNodes = data.nodes.map(d => Object.assign({}, d));
+const allLinks = data.links.map(d => Object.assign({}, d));
 
-  function resetZoom() {
-    if (svg && zoom) svg.transition().duration(220).call(zoom.transform, d3.zoomIdentity);
-  }
+let nodeRadius = Math.round((Number(data.node_radius) || 13) * NODE_SCALE);
+let collisionR = Math.max(nodeRadius * 2.2, nodeRadius + 14);
+let isAlertMode = false;
 
-  toolbar.append("button").attr("type", "button").attr("id", "cf-reset-zoom").text("Reset zoom").on("click", resetZoom);
-  toolbar.append("button").attr("type", "button").attr("id", "cf-fullscreen-btn").text("Fullscreen").on("click", () => {
-    const el = document.getElementById("cf-graph-wrap");
-    if (!document.fullscreenElement) {
-      if (el && el.requestFullscreen) el.requestFullscreen();
-    } else {
-      document.exitFullscreen();
-    }
-  });
+const wrap = d3.select(root).append("div").attr("class", "cf-wrap").attr("id", "cf-graph-wrap");
+const toolbar = wrap.append("div").attr("class", "cf-toolbar");
 
-  toolbar.append("div").attr("class", "cf-sep");
+toolbar.append("button").attr("type", "button").attr("id", "cf-reset-zoom").text("Reset zoom").on("click", () => {
+  if (svgEl && zoomBehavior) svgEl.transition().duration(220).call(zoomBehavior.transform, d3.zoomIdentity);
+});
+toolbar.append("button").attr("type", "button").attr("id", "cf-fullscreen-btn").text("Fullscreen").on("click", () => {
+  const el = document.getElementById("cf-graph-wrap");
+  if (!document.fullscreenElement) { if (el && el.requestFullscreen) el.requestFullscreen(); }
+  else { document.exitFullscreen(); }
+});
+toolbar.append("div").attr("class", "cf-sep");
 
-  const btnNormal = toolbar.append("button").attr("type", "button").text("Normal view").attr("class", "cf-active").on("click", () => {
-    viewMode = "normal";
-    btnNormal.classed("cf-active", true);
-    btnFraud.classed("cf-active", false);
-    mountChart();
-  });
-  const btnFraud = toolbar.append("button").attr("type", "button").text("Frauds only").on("click", () => {
-    viewMode = "frauds";
-    btnNormal.classed("cf-active", false);
-    btnFraud.classed("cf-active", true);
-    mountChart();
-  });
+const btnNormal = toolbar.append("button").attr("type", "button").text("Normal view").attr("class", "cf-active");
+const btnFraud = toolbar.append("button").attr("type", "button").text("Frauds only");
+btnNormal.on("click", () => { isAlertMode = false; btnNormal.classed("cf-active", true); btnFraud.classed("cf-active", false); updateView(); });
+btnFraud.on("click",  () => { isAlertMode = true;  btnNormal.classed("cf-active", false); btnFraud.classed("cf-active", true); updateView(); });
 
-  toolbar.append("div").attr("class", "cf-sep");
+toolbar.append("div").attr("class", "cf-sep");
+const rangeLab = toolbar.append("label").attr("class", "cf-range").text("Node size");
+const rangeInput = rangeLab.append("input").attr("type", "range").attr("min", 8).attr("max", 50).attr("step", 1).attr("value", nodeRadius);
+rangeLab.append("span").attr("id", "cf-node-r-val").text(String(nodeRadius));
 
-  const rangeLab = toolbar.append("label").attr("class", "cf-range").text("Node size");
-  const rangeInput = rangeLab.append("input").attr("type", "range").attr("min", 6).attr("max", 34).attr("step", 1).attr("value", Math.round(nodeRadius));
-  rangeLab.append("span").attr("id", "cf-node-r-val").text(String(Math.round(nodeRadius)));
+/* Legend */
+const legend = wrap.append("div").attr("class", "cf-legend");
+legend.append("span").style("font-weight", "600").text("Legend:");
+function addSwatch(c, color, label) { const i = c.append("span").attr("class", "cf-legend-item"); i.append("span").attr("class", "cf-legend-swatch").style("background", color); i.append("span").text(label); }
+function addLine(c, color, bold, label) { const i = c.append("span").attr("class", "cf-legend-item"); i.append("span").attr("class", bold ? "cf-legend-line-bold" : "cf-legend-line").style("border-color", color); i.append("span").text(label); }
+addSwatch(legend, "#2563EB", "Clean node");
+addSwatch(legend, "#DC2626", "Fraud-linked node");
+addLine(legend, "#94A3B8", false, "Normal flow");
+addLine(legend, "#DC2626", true, "Fraud flow");
+if (data.merge_applied) legend.append("span").attr("class", "cf-legend-item").style("color", "#64748B").style("font-style", "italic").text("Org merge: " + (data.merged_entity_groups || 0) + " group(s)");
 
-  toolbar.append("span").attr("class", "cf-hint").text("Scroll = zoom | drag canvas = pan | drag node = move | click node = details");
+const chartDiv = wrap.append("div").attr("class", "cf-chart");
+const tooltip = d3.select(root).append("div").attr("class", "tooltip");
 
-  const chart = wrap.append("div").attr("class", "cf-chart");
-  const tooltip = d3.select(root).append("div").attr("class", "tooltip");
+const detailPanel = wrap.append("div").attr("id", "cf-detail-panel").attr("class", "cf-detail-panel").style("display", "none");
+const dh = detailPanel.append("div").attr("class", "cf-d-head");
+dh.append("span").attr("id", "cf-detail-title");
+dh.append("button").attr("type", "button").attr("class", "cf-close").text("Close").on("click", hideNodeDetailPanel);
+detailPanel.append("div").attr("id", "cf-detail-body").attr("class", "cf-d-body");
 
-  const detailPanel = wrap.append("div").attr("id", "cf-detail-panel").attr("class", "cf-detail-panel").style("display", "none");
-  const dh = detailPanel.append("div").attr("class", "cf-d-head");
-  dh.append("span").attr("id", "cf-detail-title").text("Account");
-  dh.append("button").attr("type", "button").attr("class", "cf-close").text("Close").on("click", hideNodeDetailPanel);
-  detailPanel.append("div").attr("id", "cf-detail-body").attr("class", "cf-d-body");
+/* ====== SVG + SIMULATION (created once) ====== */
+const chartEl = chartDiv.node();
+let width = Math.max(400, chartEl.clientWidth || 920);
+let height = Math.max(400, chartEl.clientHeight || 560);
 
-  rangeInput.on("input", function () {
-    nodeRadius = Number(this.value);
-    collisionR = Math.max(nodeRadius * 1.95, nodeRadius + 10);
-    d3.select("#cf-node-r-val").text(String(nodeRadius));
-    chart.selectAll("circle.graph-node-circle").attr("r", nodeRadius);
-    chart.selectAll("g.graph-node text").attr("x", nodeRadius + 4);
-    if (simulation) {
-      simulation.force("collision", d3.forceCollide().radius(collisionR));
-      simulation.alpha(0.28).restart();
-    }
-  });
+const svgEl = chartDiv.append("svg")
+  .attr("viewBox", "0 0 " + width + " " + height)
+  .attr("preserveAspectRatio", "xMidYMid meet");
 
-  function linksForView() {
-    if (viewMode === "frauds") {
-      return fullLinks.filter((d) => d.is_flagged).map((d) => Object.assign({}, d));
-    }
-    return fullLinks.map((d) => Object.assign({}, d));
-  }
-
-  function nodesForLinks(links) {
-    const idSet = new Set();
-    links.forEach((d) => {
-      idSet.add(d.source);
-      idSet.add(d.target);
-    });
-    return fullNodes.filter((n) => idSet.has(n.id)).map((d) => Object.assign({}, d));
-  }
-
-  function trimmedEndpoints(d, rS, rT) {
-    const sx = d.source.x;
-    const sy = d.source.y;
-    const tx = d.target.x;
-    const ty = d.target.y;
-    const dx = tx - sx;
-    const dy = ty - sy;
-    const len = Math.hypot(dx, dy) || 1e-6;
-    const ux = dx / len;
-    const uy = dy / len;
-    const padS = rS + 2;
-    const padT = rT + 12;
-    return { x1: sx + ux * padS, y1: sy + uy * padS, x2: tx - ux * padT, y2: ty - uy * padT };
-  }
-
-  function mountChart() {
-    hideNodeDetailPanel();
-    if (simulation) {
-      simulation.stop();
-      simulation = null;
-    }
-    chart.selectAll("*").remove();
-    linkSelection = null;
-
-    const linkData = linksForView();
-    const nodeData = nodesForLinks(linkData);
-    if (linkData.length === 0 || nodeData.length === 0) {
-      chart.append("div").attr("class", "empty").text(
-        viewMode === "frauds"
-          ? "No flagged flows in the current date subset. Try Normal view or widen the date filter."
-          : "No flows to display for the current filters."
-      );
-      svg = null;
-      zoom = null;
-      gRoot = null;
-      return;
-    }
-
-    const chartEl = chart.node();
-    width = Math.max(400, chartEl.clientWidth || 920);
-    height = Math.max(400, chartEl.clientHeight || 560);
-
-    svg = chart.append("svg")
-      .attr("viewBox", "0 0 " + width + " " + height)
-      .attr("preserveAspectRatio", "xMidYMid meet");
-
-    const defs = svg.append("defs");
-    defs.append("marker")
-      .attr("id", "cf-arrow")
-      .attr("viewBox", "0 -4 10 8")
-      .attr("refX", 9)
-      .attr("refY", 0)
-      .attr("markerWidth", 7)
-      .attr("markerHeight", 7)
+const defs = svgEl.append("defs");
+/* Arrows with refX pushed out by nodeRadius so arrow tip sits at node edge */
+function buildMarkers() {
+  defs.selectAll("marker").remove();
+  const arrowRefX = Math.round(nodeRadius / 0.7);
+  [{id: "cf-arrow", color: "#94A3B8", w: 6}, {id: "cf-arrow-flag", color: "#DC2626", w: 7}].forEach(m => {
+    defs.append("marker").attr("id", m.id).attr("viewBox", "0 -5 10 10")
+      .attr("refX", arrowRefX).attr("refY", 0)
+      .attr("markerWidth", m.w).attr("markerHeight", m.w)
       .attr("orient", "auto")
-      .append("path")
-      .attr("d", "M0,-4L10,0L0,4Z")
-      .attr("fill", "#64748B");
-    defs.append("marker")
-      .attr("id", "cf-arrow-flag")
-      .attr("viewBox", "0 -4 10 8")
-      .attr("refX", 9)
-      .attr("refY", 0)
-      .attr("markerWidth", 7)
-      .attr("markerHeight", 7)
-      .attr("orient", "auto")
-      .append("path")
-      .attr("d", "M0,-4L10,0L0,4Z")
-      .attr("fill", "#DC2626");
-
-    gRoot = svg.append("g").attr("class", "zoom-layer");
-
-    zoom = d3.zoom()
-      .scaleExtent([0.12, 8])
-      .on("zoom", (event) => {
-        gRoot.attr("transform", event.transform);
-      });
-    svg.call(zoom);
-
-    const amounts = linkData.map((d) => Number(d.amount) || 0);
-    const minAmount = Math.max(1, Math.min(...amounts));
-    const maxAmount = Math.max(minAmount + 1, Math.max(...amounts));
-    const widthScale = d3.scaleSqrt().domain([minAmount, maxAmount]).range([1.5, 9]);
-
-    linkSelection = gRoot.append("g")
-      .attr("stroke-linecap", "round")
-      .selectAll("line")
-      .data(linkData)
-      .join("line")
-      .attr("stroke", (d) => (d.is_flagged ? "#DC2626" : "#64748B"))
-      .attr("stroke-opacity", 0.78)
-      .attr("stroke-width", (d) => widthScale(Math.max(1, Number(d.amount) || 0)))
-      .attr("marker-end", (d) => (d.is_flagged ? "url(#cf-arrow-flag)" : "url(#cf-arrow)"));
-
-    const dragBehavior = d3.drag()
-      .on("start", (event, d) => {
-        dragMoved = false;
-        if (!event.active) simulation.alphaTarget(0.3).restart();
-        d.fx = d.x;
-        d.fy = d.y;
-      })
-      .on("drag", (event, d) => {
-        dragMoved = true;
-        d.fx = event.x;
-        d.fy = event.y;
-      })
-      .on("end", (event, d) => {
-        if (!event.active) simulation.alphaTarget(0);
-        d.fx = null;
-        d.fy = null;
-        if (!dragMoved) {
-          showNodeDetailPanel(d);
-        }
-      });
-
-    const node = gRoot.append("g")
-      .selectAll("g")
-      .data(nodeData)
-      .join("g")
-      .attr("class", "graph-node")
-      .call(dragBehavior);
-
-    node.append("circle")
-      .attr("class", "graph-node-circle")
-      .attr("r", nodeRadius)
-      .attr("fill", (d) => (d.has_flagged_tx ? "#F59E0B" : "#2563EB"))
-      .attr("stroke", "#0F172A")
-      .attr("stroke-width", 1.1);
-
-    node.append("text")
-      .text((d) => truncateLabel((d.label && String(d.label).trim()) || d.id))
-      .attr("x", nodeRadius + 4)
-      .attr("y", 4)
-      .attr("font-size", 11)
-      .attr("fill", "#0F172A");
-
-    function linkTip(d) {
-      const s = typeof d.source === "object" ? d.source : nodeData.find((n) => n.id === d.source);
-      const t = typeof d.target === "object" ? d.target : nodeData.find((n) => n.id === d.target);
-      const sLab = s ? nodeTitle(s) : d.source;
-      const tLab = t ? nodeTitle(t) : d.target;
-      return "<strong>" + sLab + " \u2192 " + tLab + "</strong><br/>Amount: " + Number(d.amount).toLocaleString() + "<br/>Transactions: " + d.tx_count + "<br/>Flagged: " + d.flagged_tx;
-    }
-
-    linkSelection
-      .on("mousemove", (event, d) => {
-        tooltip
-          .style("opacity", 1)
-          .style("left", event.offsetX + 14 + "px")
-          .style("top", event.offsetY + 14 + "px")
-          .html(linkTip(d));
-      })
-      .on("mouseout", () => tooltip.style("opacity", 0));
-
-    node
-      .on("mousemove", (event, d) => {
-        tooltip
-          .style("opacity", 1)
-          .style("left", event.offsetX + 14 + "px")
-          .style("top", event.offsetY + 14 + "px")
-          .html("<strong>" + nodeTitle(d) + "</strong><br/>Linked to flagged flow: " + (d.has_flagged_tx ? "yes" : "no") + "<br/><em>Click for details</em>");
-      })
-      .on("mouseout", () => tooltip.style("opacity", 0));
-
-    simulation = d3.forceSimulation(nodeData)
-      .force("link", d3.forceLink(linkData).id((d) => d.id).distance(140).strength(0.18))
-      .force("charge", d3.forceManyBody().strength(-520))
-      .force("center", d3.forceCenter(width / 2, height / 2))
-      .force("collision", d3.forceCollide().radius(collisionR));
-
-    simulation.on("tick", () => {
-      linkSelection.each(function (d) {
-        const t = trimmedEndpoints(d, nodeRadius, nodeRadius);
-        d3.select(this).attr("x1", t.x1).attr("y1", t.y1).attr("x2", t.x2).attr("y2", t.y2);
-      });
-      node.attr("transform", (d) => "translate(" + d.x + "," + d.y + ")");
-    });
-
-    svg.call(zoom.transform, d3.zoomIdentity);
-  }
-
-  mountChart();
-
-  function reflowChart() {
-    if (!svg || !simulation) return;
-    const rect = chart.node().getBoundingClientRect();
-    const nw = Math.max(400, rect.width);
-    const nh = Math.max(320, rect.height);
-    if (Math.abs(nw - width) < 2 && Math.abs(nh - height) < 2) return;
-    width = nw;
-    height = nh;
-    svg.attr("viewBox", "0 0 " + width + " " + height);
-    simulation.force("center", d3.forceCenter(width / 2, height / 2));
-    simulation.alpha(0.22).restart();
-  }
-
-  document.addEventListener("fullscreenchange", () => {
-    const fsb = document.getElementById("cf-fullscreen-btn");
-    if (fsb) fsb.textContent = document.fullscreenElement ? "Exit fullscreen" : "Fullscreen";
-    window.setTimeout(reflowChart, 80);
-  });
-  window.addEventListener("resize", () => {
-    window.setTimeout(reflowChart, 120);
+      .append("path").attr("d", "M0,-4L10,0L0,4Z").attr("fill", m.color);
   });
 }
+buildMarkers();
+
+const gRoot = svgEl.append("g").attr("class", "zoom-layer");
+const zoomBehavior = d3.zoom().scaleExtent([0.12, 8]).on("zoom", e => gRoot.attr("transform", e.transform));
+svgEl.call(zoomBehavior);
+
+/* Uniform edge widths */
+const EDGE_W = 2.5;
+const EDGE_W_FRAUD = 4;
+function baseWidth(d) { return d.is_flagged ? EDGE_W_FRAUD : EDGE_W; }
+
+/* --- Draw layers: edges first, then nodes on top --- */
+const edgeLayer = gRoot.append("g").attr("stroke-linecap", "round");
+const nodeLayer = gRoot.append("g");
+const labelLayer = gRoot.append("g");
+
+/* Edges (visible) */
+const link = edgeLayer.selectAll("line.cf-edge").data(allLinks).join("line")
+  .attr("class", "cf-edge")
+  .attr("stroke", d => d.is_flagged ? "#DC2626" : "#94A3B8")
+  .attr("stroke-opacity", d => d.is_flagged ? 1 : 0.6)
+  .attr("stroke-width", baseWidth)
+  .attr("marker-end", d => d.is_flagged ? "url(#cf-arrow-flag)" : "url(#cf-arrow)");
+
+/* Edges (invisible fat hit zone) */
+const linkHit = edgeLayer.selectAll("line.cf-edge-hit").data(allLinks).join("line")
+  .attr("class", "cf-edge-hit")
+  .attr("stroke", "transparent").attr("stroke-width", 18).style("cursor", "pointer");
+
+/* Node circles */
+const FRAUD_COLOR = "#DC2626";
+const CLEAN_COLOR = "#2563EB";
+
+const nodeCircle = nodeLayer.selectAll("circle.graph-node-circle").data(allNodes).join("circle")
+  .attr("class", "graph-node-circle")
+  .attr("r", nodeRadius)
+  .attr("fill", d => d.has_flagged_tx ? FRAUD_COLOR : CLEAN_COLOR)
+  .attr("stroke", "#0F172A").attr("stroke-width", 1.5)
+  .style("cursor", "grab");
+
+/* Node labels (separate layer, like the reference) */
+const nodeLabel = labelLayer.selectAll("text.node-label").data(allNodes).join("text")
+  .attr("class", "node-label")
+  .attr("dy", nodeRadius + 14).attr("text-anchor", "middle")
+  .attr("font-size", 11).attr("fill", "#334155")
+  .text(d => truncateLabel((d.label && String(d.label).trim()) || d.id));
+
+/* Simulation */
+const simulation = d3.forceSimulation(allNodes)
+  .force("link", d3.forceLink(allLinks).id(d => d.id).distance(160).strength(0.18))
+  .force("charge", d3.forceManyBody().strength(-620))
+  .force("center", d3.forceCenter(width / 2, height / 2))
+  .force("collide", d3.forceCollide().radius(collisionR));
+
+simulation.on("tick", () => {
+  link.attr("x1", d => d.source.x).attr("y1", d => d.source.y)
+      .attr("x2", d => d.target.x).attr("y2", d => d.target.y);
+  linkHit.attr("x1", d => d.source.x).attr("y1", d => d.source.y)
+         .attr("x2", d => d.target.x).attr("y2", d => d.target.y);
+  nodeCircle.attr("cx", d => d.x).attr("cy", d => d.y);
+  nodeLabel.attr("x", d => d.x).attr("y", d => d.y);
+});
+
+/* Freeze positions once layout stabilizes */
+simulation.on("end", () => {
+  allNodes.forEach(d => { d.fx = d.x; d.fy = d.y; });
+});
+
+/* ====== DRAG BEHAVIOR ====== */
+let isDragging = false;
+
+nodeCircle.call(d3.drag()
+  .on("start", function (event, d) {
+    isDragging = true;
+    hideTip();
+    if (!event.active) simulation.alphaTarget(0.3).restart();
+    d.fx = d.x; d.fy = d.y;
+    d3.select(this).style("cursor", "grabbing");
+  })
+  .on("drag", function (event, d) {
+    d.fx = event.x; d.fy = event.y;
+  })
+  .on("end", function (event, d) {
+    isDragging = false;
+    if (!event.active) simulation.alphaTarget(0);
+    d.fx = event.x; d.fy = event.y;
+    d3.select(this).style("cursor", "grab");
+  })
+);
+
+/* ====== VIEW TOGGLE (transitions, no teardown) ====== */
+function updateView() {
+  const dur = ANIM_MS;
+
+  /* Edges */
+  link.transition().duration(dur)
+    .attr("stroke", d => isAlertMode ? (d.is_flagged ? FRAUD_COLOR : "#CBD5E1") : (d.is_flagged ? FRAUD_COLOR : "#94A3B8"))
+    .attr("stroke-width", d => isAlertMode ? (d.is_flagged ? EDGE_W_FRAUD * 1.6 : 0.5) : baseWidth(d))
+    .attr("stroke-opacity", d => isAlertMode ? (d.is_flagged ? 1 : 0.12) : (d.is_flagged ? 1 : 0.6))
+    .attr("marker-end", d => (d.is_flagged || !isAlertMode) ? (d.is_flagged ? "url(#cf-arrow-flag)" : "url(#cf-arrow)") : "");
+
+  /* Nodes */
+  nodeCircle.transition().duration(dur)
+    .attr("r", d => isAlertMode && d.has_flagged_tx ? nodeRadius * 1.3 : nodeRadius)
+    .attr("fill", d => {
+      if (isAlertMode) return d.has_flagged_tx ? FRAUD_COLOR : "#E2E8F0";
+      return d.has_flagged_tx ? FRAUD_COLOR : CLEAN_COLOR;
+    })
+    .attr("stroke", d => isAlertMode && d.has_flagged_tx ? "rgba(220,38,38,0.35)" : "#0F172A")
+    .attr("stroke-width", d => isAlertMode && d.has_flagged_tx ? 6 : 1.5)
+    .attr("opacity", d => isAlertMode && !d.has_flagged_tx ? 0.2 : 1);
+
+  /* Labels */
+  nodeLabel.transition().duration(dur)
+    .attr("opacity", d => isAlertMode && !d.has_flagged_tx ? 0.15 : 1)
+    .attr("fill", d => isAlertMode && d.has_flagged_tx ? "#B91C1C" : "#334155")
+    .attr("font-weight", d => isAlertMode && d.has_flagged_tx ? "700" : "500");
+
+  /* Pulse animation for fraud nodes (D3-driven, not CSS @keyframes) */
+  gRoot.selectAll("circle.fraud-pulse").remove();
+  if (isAlertMode) {
+    const fraudNodes = allNodes.filter(d => d.has_flagged_tx);
+    const pulses = nodeLayer.selectAll("circle.fraud-pulse").data(fraudNodes, d => d.id).join("circle")
+      .attr("class", "fraud-pulse")
+      .attr("cx", d => d.x).attr("cy", d => d.y)
+      .attr("fill", "none").attr("stroke", "#DC2626");
+    function doPulse() {
+      pulses
+        .attr("r", nodeRadius).attr("stroke-width", 3).attr("stroke-opacity", 0.6)
+        .transition().duration(1200).ease(d3.easeCubicOut)
+        .attr("r", nodeRadius + 18).attr("stroke-width", 0.5).attr("stroke-opacity", 0)
+        .on("end", doPulse);
+    }
+    doPulse();
+  }
+}
+
+/* ====== HOVER INTERACTIONS ====== */
+const HOVER_SCALE = 1.35;
+
+function showTip(event, html) {
+  const bounds = chartEl.getBoundingClientRect();
+  tooltip.style("opacity", 1)
+    .style("left", (event.clientX - bounds.left + 16) + "px")
+    .style("top", (event.clientY - bounds.top + 16) + "px")
+    .html(html);
+}
+function hideTip() { tooltip.style("opacity", 0); }
+
+/* Edge hover */
+function onEdgeEnter(event, d) {
+  showTip(event, buildEdgeTooltipHtml(d));
+  link.filter(l => l === d).transition().duration(150)
+    .attr("stroke-width", baseWidth(d) * 2.5).attr("stroke-opacity", 1);
+}
+function onEdgeMove(event, d) {
+  const bounds = chartEl.getBoundingClientRect();
+  tooltip.style("left", (event.clientX - bounds.left + 16) + "px")
+         .style("top", (event.clientY - bounds.top + 16) + "px");
+}
+function onEdgeLeave(event, d) {
+  hideTip();
+  link.filter(l => l === d).transition().duration(200)
+    .attr("stroke-width", isAlertMode ? (d.is_flagged ? EDGE_W_FRAUD * 1.6 : 0.5) : baseWidth(d))
+    .attr("stroke-opacity", isAlertMode ? (d.is_flagged ? 1 : 0.12) : (d.is_flagged ? 1 : 0.6));
+}
+
+linkHit.on("mouseenter", onEdgeEnter).on("mousemove", onEdgeMove).on("mouseleave", onEdgeLeave);
+link.on("mouseenter", onEdgeEnter).on("mousemove", onEdgeMove).on("mouseleave", onEdgeLeave);
+
+/* Node hover (skipped while dragging) */
+nodeCircle
+  .on("mouseenter", function (event, d) {
+    if (isDragging) return;
+    d3.select(this).transition().duration(150).attr("r", nodeRadius * HOVER_SCALE).attr("stroke-width", 2.5);
+    link.transition().duration(150)
+      .attr("stroke-opacity", l => (l.source.id === d.id || l.target.id === d.id) ? 1 : 0.1)
+      .attr("stroke-width", l => (l.source.id === d.id || l.target.id === d.id) ? baseWidth(l) * 2 : baseWidth(l) * 0.4);
+    showTip(event, "<strong>" + escapeHtml(nodeTitle(d)) + "</strong><br/>Flagged: " + (d.has_flagged_tx ? "yes" : "no") + "<br/><em>Click for details \u00b7 Drag to move</em>");
+  })
+  .on("mousemove", function (event) {
+    if (isDragging) return;
+    const bounds = chartEl.getBoundingClientRect();
+    tooltip.style("left", (event.clientX - bounds.left + 14) + "px")
+           .style("top", (event.clientY - bounds.top + 14) + "px");
+  })
+  .on("mouseleave", function (event, d) {
+    if (isDragging) return;
+    const r = isAlertMode && d.has_flagged_tx ? nodeRadius * 1.3 : nodeRadius;
+    const sw = isAlertMode && d.has_flagged_tx ? 6 : 1.5;
+    d3.select(this).transition().duration(200).attr("r", r).attr("stroke-width", sw);
+    link.transition().duration(200)
+      .attr("stroke-opacity", l => isAlertMode ? (l.is_flagged ? 1 : 0.12) : (l.is_flagged ? 1 : 0.6))
+      .attr("stroke-width", l => isAlertMode ? (l.is_flagged ? EDGE_W_FRAUD * 1.6 : 0.5) : baseWidth(l));
+    hideTip();
+  })
+  .on("click", (event, d) => { if (!isDragging) { event.stopPropagation(); showNodeDetailPanel(d); } });
+
+/* ====== NODE SIZE SLIDER ====== */
+rangeInput.on("input", function () {
+  nodeRadius = Number(this.value);
+  collisionR = Math.max(nodeRadius * 2.2, nodeRadius + 14);
+  d3.select("#cf-node-r-val").text(String(nodeRadius));
+  buildMarkers();
+  nodeCircle.attr("r", nodeRadius);
+  nodeLabel.attr("dy", nodeRadius + 14);
+  gRoot.selectAll("circle.fraud-pulse").attr("r", nodeRadius);
+  simulation.force("collide", d3.forceCollide().radius(collisionR));
+  simulation.alpha(0.15).restart();
+});
+
+/* ====== RESIZE / FULLSCREEN ====== */
+function reflowChart() {
+  const rect = chartEl.getBoundingClientRect();
+  const nw = Math.max(400, rect.width);
+  const nh = Math.max(320, rect.height);
+  if (Math.abs(nw - width) < 2 && Math.abs(nh - height) < 2) return;
+  width = nw; height = nh;
+  svgEl.attr("viewBox", "0 0 " + width + " " + height);
+  simulation.force("center", d3.forceCenter(width / 2, height / 2));
+  simulation.alpha(0.15).restart();
+}
+
+document.addEventListener("fullscreenchange", () => {
+  const fsb = document.getElementById("cf-fullscreen-btn");
+  if (fsb) fsb.textContent = document.fullscreenElement ? "Exit fullscreen" : "Fullscreen";
+  setTimeout(reflowChart, 80);
+});
+window.addEventListener("resize", () => setTimeout(reflowChart, 120));
+
+} /* end else (has links) */
 </script>
