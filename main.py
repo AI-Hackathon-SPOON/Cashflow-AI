@@ -212,9 +212,44 @@ def _render_step_import() -> None:
     )
 
     if source == "📂 Sample Data":
-        st.info("Load the built-in demo dataset (synthetic transactions with some fraud signals).")
+        st.info(
+            "Load the built-in demo dataset (synthetic transactions with some fraud signals). "
+            "The **5-transaction** chain (salary → splits → off-hours crypto, etc.) can be repeated; "
+            "you can also set a larger **total row count** and the app will pad with low-signal payments."
+        )
+        s1, s2 = st.columns(2)
+        with s1:
+            sample_n = st.number_input(
+                "Total transactions (N)",
+                min_value=1,
+                max_value=5000,
+                value=5,
+                step=1,
+                key="sample_total_count",
+                help="Final number of rows loaded. If higher than 5 × instances, extra mundane rows are added.",
+            )
+        with s2:
+            sample_inst = st.number_input(
+                "Demo pattern instances",
+                min_value=1,
+                max_value=500,
+                value=1,
+                step=1,
+                key="sample_pattern_instances",
+                help="How many times the full 5-transaction demo story is repeated (new ids and shifted times per instance).",
+            )
+        approx_demo = 5 * int(sample_inst)
+        if int(sample_n) > approx_demo:
+            st.caption(f"About **{approx_demo}** rows come from repeated demo patterns; **{int(sample_n) - approx_demo}** will be padding.")
+        elif int(sample_n) < approx_demo:
+            st.caption(
+                f"You asked for **{approx_demo}** demo rows ({sample_inst} × 5); only the first **{int(sample_n)}** will be kept."
+            )
         if st.button("Load sample data", type="primary", use_container_width=False):
-            _append_records(sample_records(), "sample dataset")
+            _append_records(
+                sample_records(total_count=int(sample_n), pattern_instances=int(sample_inst)),
+                "sample dataset",
+            )
             st.rerun()
 
     elif source == "📄 CSV File":
