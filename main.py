@@ -5,6 +5,7 @@ from __future__ import annotations
 import hashlib
 import json
 import os
+import tempfile
 from datetime import date
 from typing import Any
 
@@ -40,6 +41,8 @@ from app.rag_chroma import (
     upsert_flagged_snapshots,
 )
 from app.graph import build_cashflow_graph_payload, filter_scored_df_by_graph_dates
+from app.md_to_docx import try_markdown_to_docx
+from app.md_to_pdf import render_pdf_bytes, try_markdown_to_pdf
 from app.graph_template import render_graph_html
 from app.ingestion import (
     normalize_transactions,
@@ -118,6 +121,54 @@ def _llm_row_fingerprint(scored_df: pd.DataFrame, *, flagged_only: bool) -> str:
         )
     pairs.sort()
     return hashlib.sha256(json.dumps(pairs, ensure_ascii=False).encode("utf-8")).hexdigest()
+
+
+def _unlink_llm_row_cache(path: str | None) -> None:
+    if isinstance(path, str) and path and os.path.isfile(path):
+        try:
+            os.unlink(path)
+        except OSError:
+            pass
+
+
+def _save_per_row_llm_map_disk(row_map: dict[str, str]) -> str:
+    """Write explanations to a temp JSON file (avoids huge ``st.session_state`` → browser fetch failures)."""
+    fd, path = tempfile.mkstemp(prefix="streamlit_llm_row_", suffix=".json")
+    try:
+        with os.fdopen(fd, "w", encoding="utf-8") as f:
+            json.dump(row_map, f, ensure_ascii=False)
+    except Exception:
+        _unlink_llm_row_cache(path)
+        raise
+    return path
+
+
+def _load_per_row_llm_map_disk(path: str) -> dict[str, str]:
+    with open(path, encoding="utf-8") as f:
+        data = json.load(f)
+    if not isinstance(data, dict):
+        return {}
+    return {str(k): str(v) for k, v in data.items() if isinstance(v, str)}
+
+
+def _per_row_llm_map_from_session() -> dict[str, str]:
+    path = st.session_state.get("per_row_llm_map_path")
+    if isinstance(path, str) and path and os.path.isfile(path):
+        try:
+            return _load_per_row_llm_map_disk(path)
+        except (json.JSONDecodeError, OSError, TypeError):
+            return {}
+    legacy = st.session_state.get("per_row_llm_map")
+    if isinstance(legacy, dict):
+        return {str(k): str(v) for k, v in legacy.items() if isinstance(v, str)}
+    return {}
+
+
+def _cleanup_per_row_llm_storage() -> None:
+    _unlink_llm_row_cache(st.session_state.pop("per_row_llm_map_path", None))
+    st.session_state.pop("per_row_llm_map", None)
+    st.session_state.pop("per_row_llm_fingerprint", None)
+    st.session_state.pop("per_row_llm_flagged_only", None)
 
 
 def _explicit_column_mapping() -> dict[str, str] | None:
@@ -296,7 +347,16 @@ def _render_step_map() -> None:
             st.session_state.pop("mapping_confirmed", None)
             st.session_state.pop("_csv_headers", None)
             st.session_state.pop("cfo_report_md", None)
+            st.session_state.pop("cfo_report_pdf", None)
+            st.session_state.pop("cfo_report_pdf_error", None)
+            st.session_state.pop("cfo_report_docx", None)
+            st.session_state.pop("cfo_report_docx_error", None)
             st.session_state.pop("rag_explain_md", None)
+            st.session_state.pop("rag_explain_pdf", None)
+            st.session_state.pop("rag_explain_pdf_error", None)
+            st.session_state.pop("rag_explain_docx", None)
+            st.session_state.pop("rag_explain_docx_error", None)
+            _cleanup_per_row_llm_storage()
             st.rerun()
 
     with st.expander("Preview raw records (first 5)"):
@@ -470,16 +530,26 @@ def _render_step_analyze(raw_records: list[dict[str, Any]]) -> None:
                 "mapping_confirmed",
                 "_csv_headers",
                 "cfo_report_md",
+                "cfo_report_pdf",
+                "cfo_report_pdf_error",
+                "cfo_report_docx",
+                "cfo_report_docx_error",
                 "rag_explain_md",
+                "rag_explain_pdf",
+                "rag_explain_pdf_error",
+                "rag_explain_docx",
+                "rag_explain_docx_error",
             ]:
                 st.session_state.pop(k, None)
+            _cleanup_per_row_llm_storage()
             st.session_state.raw_records = []
             st.rerun()
 
     st.markdown("### LLM + RAG row explanations (OpenAI + optional Chroma)")
     st.caption(
         "Adds column **llm_rag_explanation** to the tables below: same idea as the CFO report — model grounds on "
-        "rule-based fields plus retrieved KB chunks. Use **Chroma → KB map** or automatic Chroma query here."
+        "rule-based fields plus retrieved KB chunks. Use **Chroma → KB map** or automatic Chroma query here. "
+        "Explanations are cached in a **temp file** (not in browser session) so large runs do not break the UI."
     )
     t1, t2, t3 = st.columns(3)
     with t1:
@@ -538,9 +608,7 @@ def _render_step_analyze(raw_records: list[dict[str, Any]]) -> None:
         gen_table_llm = st.button("Generate LLM+RAG column", type="primary", key="table_llm_generate")
     with b2:
         if st.button("Clear LLM+RAG column cache", key="table_llm_clear"):
-            st.session_state.pop("per_row_llm_map", None)
-            st.session_state.pop("per_row_llm_fingerprint", None)
-            st.session_state.pop("per_row_llm_flagged_only", None)
+            _cleanup_per_row_llm_storage()
             st.rerun()
 
     if gen_table_llm:
@@ -591,7 +659,9 @@ def _render_step_analyze(raw_records: list[dict[str, Any]]) -> None:
                         chunk_size=int(table_llm_chunk),
                         max_kb_per_item=int(table_llm_kb_cap),
                     )
-                st.session_state["per_row_llm_map"] = row_map
+                _unlink_llm_row_cache(st.session_state.pop("per_row_llm_map_path", None))
+                st.session_state.pop("per_row_llm_map", None)
+                st.session_state["per_row_llm_map_path"] = _save_per_row_llm_map_disk(row_map)
                 st.session_state["per_row_llm_fingerprint"] = _llm_row_fingerprint(
                     scored_df, flagged_only=bool(table_llm_flagged_only)
                 )
@@ -605,7 +675,7 @@ def _render_step_analyze(raw_records: list[dict[str, Any]]) -> None:
     fp_mode = bool(st.session_state.get("per_row_llm_flagged_only", True))
     fp_now = _llm_row_fingerprint(scored_df, flagged_only=fp_mode)
     cached_fp = st.session_state.get("per_row_llm_fingerprint")
-    row_llm_session = dict(st.session_state.get("per_row_llm_map") or {})
+    row_llm_session = _per_row_llm_map_from_session()
     if cached_fp is not None and cached_fp != fp_now:
         row_llm_map: dict[str, str] = {}
         st.warning(
@@ -743,7 +813,8 @@ def _render_step_analyze(raw_records: list[dict[str, Any]]) -> None:
         st.caption(
             "Uses **OPENAI_API_KEY** from the environment or `.streamlit/secrets.toml`. "
             "Builds categories from **flagged** transactions. Optional **global KB** (vector-retrieved learned patterns "
-            "for this dataset) is merged into the same prompt to strengthen the annex."
+            "for this dataset) is merged into the same prompt. Output: **inline PDF** when conversion succeeds, "
+            "**Word (.docx)** with native headings/lists/tables, and Markdown in a collapsed section."
         )
         st.checkbox(
             "Enhance CFO report with global KB snippets (RAG)",
@@ -762,7 +833,14 @@ def _render_step_analyze(raw_records: list[dict[str, Any]]) -> None:
             gen_clicked = st.button("Generate report", type="primary", key="cfo_generate_report")
         with col_rep2:
             if st.button("Clear report", key="cfo_clear_report"):
-                st.session_state.pop("cfo_report_md", None)
+                for _k in (
+                    "cfo_report_md",
+                    "cfo_report_pdf",
+                    "cfo_report_pdf_error",
+                    "cfo_report_docx",
+                    "cfo_report_docx_error",
+                ):
+                    st.session_state.pop(_k, None)
                 st.rerun()
 
         if gen_clicked:
@@ -782,14 +860,72 @@ def _render_step_analyze(raw_records: list[dict[str, Any]]) -> None:
                 with st.spinner("Calling OpenAI (gpt-4o)…"):
                     report_md = generate_fraud_audit_report(alerts, kb_global_context=kb_global)
                 st.session_state["cfo_report_md"] = report_md
+                st.session_state.pop("cfo_report_pdf_error", None)
+                st.session_state.pop("cfo_report_docx_error", None)
+                doc_meta = dict(
+                    document_title="Executive fraud & AML annex",
+                    document_kind="CFO audit report — structured alert categories",
+                    classification="CONFIDENTIAL — Board / CFO circulation — Internal draft",
+                )
+                pdf_b, pdf_err = try_markdown_to_pdf(report_md, **doc_meta)
+                if pdf_b:
+                    st.session_state["cfo_report_pdf"] = pdf_b
+                else:
+                    st.session_state.pop("cfo_report_pdf", None)
+                    st.session_state["cfo_report_pdf_error"] = pdf_err or "unknown"
+                docx_b, docx_err = try_markdown_to_docx(report_md, **doc_meta)
+                if docx_b:
+                    st.session_state["cfo_report_docx"] = docx_b
+                else:
+                    st.session_state.pop("cfo_report_docx", None)
+                    st.session_state["cfo_report_docx_error"] = docx_err or "unknown"
             except ValueError as exc:
                 st.error(str(exc))
                 st.info("Add `OPENAI_API_KEY` to `.streamlit/secrets.toml` or set it in your shell before `streamlit run`.")
 
-        if st.session_state.get("cfo_report_md"):
+        if st.session_state.get("cfo_report_pdf"):
+            st.caption(
+                "CFO audit report — **PDF preview**; same narrative is also available as a **Word (.docx)** "
+                "with headings, lists, and tables (not a PDF reskin)."
+            )
+            render_pdf_bytes(
+                st.session_state["cfo_report_pdf"],
+                height=780,
+                download_filename="cfo_fraud_audit_report.pdf",
+                download_key="cfo_pdf_dl",
+            )
+            if st.session_state.get("cfo_report_docx"):
+                st.download_button(
+                    "Download Word report (.docx)",
+                    data=st.session_state["cfo_report_docx"],
+                    file_name="cfo_fraud_audit_report.docx",
+                    mime="application/vnd.openxmlformats-officedocument.wordprocessingml.document",
+                    key="cfo_docx_dl",
+                )
+            elif st.session_state.get("cfo_report_docx_error"):
+                st.caption(f"Word export failed: `{st.session_state['cfo_report_docx_error']}`")
+            with st.expander("View as Markdown (source)", expanded=False):
+                st.markdown(st.session_state.get("cfo_report_md") or "")
+        elif st.session_state.get("cfo_report_md"):
+            err = st.session_state.get("cfo_report_pdf_error")
+            if err:
+                st.warning(
+                    f"PDF preview could not be built (`{err}`). Showing Markdown; ensure `markdown` and "
+                    "`xhtml2pdf` are installed (`uv sync`)."
+                )
+            if st.session_state.get("cfo_report_docx"):
+                st.download_button(
+                    "Download Word report (.docx)",
+                    data=st.session_state["cfo_report_docx"],
+                    file_name="cfo_fraud_audit_report.docx",
+                    mime="application/vnd.openxmlformats-officedocument.wordprocessingml.document",
+                    key="cfo_docx_dl_mdonly",
+                )
+            elif st.session_state.get("cfo_report_docx_error"):
+                st.caption(f"Word export failed: `{st.session_state['cfo_report_docx_error']}`")
             st.markdown(st.session_state["cfo_report_md"])
         else:
-            st.caption("Click **Generate report** to produce a CFO audit summary via OpenAI.")
+            st.caption("Click **Generate report** to produce a CFO audit summary via OpenAI (PDF when possible).")
 
         with st.expander("Local vector KB (Chroma)", expanded=False):
             st.caption(
@@ -940,7 +1076,9 @@ def _render_step_analyze(raw_records: list[dict[str, Any]]) -> None:
         with st.expander("RAG: explain each flagged transaction (vector KB)", expanded=False):
             st.caption(
                 "Paste a ``transaction_id → [hits]`` map, **or** use **Local vector KB (Chroma)** above to auto-fill "
-                "from your on-disk store. You can also manage patterns with ``build_vector_kb_document`` in code / n8n."
+                "from your on-disk store. Primary output: **inline PDF**; also **Word (.docx)** with structured "
+                "headings and lists. Markdown is not shown in the UI when PDF succeeds; if PDF fails, Markdown appears "
+                "with the same DOCX download."
             )
             st.text_area(
                 "KB by transaction_id — JSON object: each key is a transaction id, value is an array of KB objects",
@@ -960,7 +1098,14 @@ def _render_step_analyze(raw_records: list[dict[str, Any]]) -> None:
                 gen_rag = st.button("Generate RAG explanations", type="secondary", key="rag_gen")
             with col_rg2:
                 if st.button("Clear RAG output", key="rag_clear"):
-                    st.session_state.pop("rag_explain_md", None)
+                    for _k in (
+                        "rag_explain_md",
+                        "rag_explain_pdf",
+                        "rag_explain_pdf_error",
+                        "rag_explain_docx",
+                        "rag_explain_docx_error",
+                    ):
+                        st.session_state.pop(_k, None)
                     st.rerun()
 
             if gen_rag:
@@ -998,14 +1143,69 @@ def _render_step_analyze(raw_records: list[dict[str, Any]]) -> None:
                                             chunk_size=int(rag_chunk),
                                             max_kb_per_item=int(rag_kb_cap),
                                         )
-                                    st.session_state["rag_explain_md"] = rag_md
+                                    st.session_state.pop("rag_explain_pdf_error", None)
+                                    st.session_state.pop("rag_explain_docx_error", None)
+                                    st.session_state.pop("rag_explain_md", None)
+                                    rag_meta = dict(
+                                        document_title="Flagged transaction RAG briefing",
+                                        document_kind="Per-transaction narrative — vector KB precedents",
+                                        classification="CONFIDENTIAL — AML / investigations working paper",
+                                    )
+                                    pdf_b, pdf_err = try_markdown_to_pdf(rag_md, **rag_meta)
+                                    if pdf_b:
+                                        st.session_state["rag_explain_pdf"] = pdf_b
+                                    else:
+                                        st.session_state.pop("rag_explain_pdf", None)
+                                        st.session_state["rag_explain_pdf_error"] = pdf_err or "unknown"
+                                        st.session_state["rag_explain_md"] = rag_md
+                                    docx_b, docx_err = try_markdown_to_docx(rag_md, **rag_meta)
+                                    if docx_b:
+                                        st.session_state["rag_explain_docx"] = docx_b
+                                    else:
+                                        st.session_state.pop("rag_explain_docx", None)
+                                        st.session_state["rag_explain_docx_error"] = docx_err or "unknown"
                                 except ValueError as exc:
                                     st.error(str(exc))
                                     st.info(
                                         "Add `OPENAI_API_KEY` to `.streamlit/secrets.toml` or set it in your environment."
                                     )
 
-            if st.session_state.get("rag_explain_md"):
+            if st.session_state.get("rag_explain_pdf"):
+                st.caption(
+                    "RAG explanations — **PDF preview**; download **Word (.docx)** for the same content in native "
+                    "document structure (Markdown stays hidden here)."
+                )
+                render_pdf_bytes(
+                    st.session_state["rag_explain_pdf"],
+                    height=820,
+                    download_filename="rag_flagged_explanations.pdf",
+                    download_key="rag_pdf_dl",
+                )
+                if st.session_state.get("rag_explain_docx"):
+                    st.download_button(
+                        "Download Word RAG brief (.docx)",
+                        data=st.session_state["rag_explain_docx"],
+                        file_name="rag_flagged_explanations.docx",
+                        mime="application/vnd.openxmlformats-officedocument.wordprocessingml.document",
+                        key="rag_docx_dl",
+                    )
+                elif st.session_state.get("rag_explain_docx_error"):
+                    st.caption(f"Word export failed: `{st.session_state['rag_explain_docx_error']}`")
+            elif st.session_state.get("rag_explain_md"):
+                st.warning(
+                    "PDF conversion failed for this RAG run; showing Markdown only. "
+                    f"Detail: `{st.session_state.get('rag_explain_pdf_error', '')}`"
+                )
+                if st.session_state.get("rag_explain_docx"):
+                    st.download_button(
+                        "Download Word RAG brief (.docx)",
+                        data=st.session_state["rag_explain_docx"],
+                        file_name="rag_flagged_explanations.docx",
+                        mime="application/vnd.openxmlformats-officedocument.wordprocessingml.document",
+                        key="rag_docx_dl_mdonly",
+                    )
+                elif st.session_state.get("rag_explain_docx_error"):
+                    st.caption(f"Word export failed: `{st.session_state['rag_explain_docx_error']}`")
                 st.markdown(st.session_state["rag_explain_md"])
 
 
