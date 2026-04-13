@@ -2,6 +2,7 @@
 
 from __future__ import annotations
 
+import json
 import os
 from datetime import date
 from typing import Any
@@ -12,8 +13,22 @@ import streamlit.components.v1 as components
 
 from app.constants import AUTO_COLUMN_LABEL, MAPPING_CANONICAL_FIELDS
 from app.fraud_scoring import score_fraud_signals
-from app.fraud_report_openai import generate_fraud_audit_report
-from app.fraud_report_payload import build_categorized_fraud_alerts
+from app.fraud_report_openai import generate_flagged_rag_explanations, generate_fraud_audit_report
+from app.fraud_report_payload import (
+    attach_kb_by_transaction_id,
+    build_categorized_fraud_alerts,
+    build_flagged_rag_items,
+    build_vector_kb_document,
+)
+from app.rag_chroma import (
+    build_kb_map_from_chroma,
+    chroma_document_count,
+    chroma_persist_path,
+    global_kb_from_chroma_for_flagged,
+    list_stored_documents,
+    parse_and_upsert_learned_json,
+    upsert_flagged_snapshots,
+)
 from app.graph import build_cashflow_graph_payload, filter_scored_df_by_graph_dates
 from app.graph_template import render_graph_html
 from app.ingestion import (
@@ -253,6 +268,7 @@ def _render_step_map() -> None:
             st.session_state.pop("mapping_confirmed", None)
             st.session_state.pop("_csv_headers", None)
             st.session_state.pop("cfo_report_md", None)
+            st.session_state.pop("rag_explain_md", None)
             st.rerun()
 
     with st.expander("Preview raw records (first 5)"):
@@ -292,7 +308,13 @@ def _render_step_analyze(raw_records: list[dict[str, Any]]) -> None:
             st.rerun()
     with mc5:
         if st.button("🗑️ Clear everything", use_container_width=True):
-            for k in ["raw_records", "mapping_confirmed", "_csv_headers", "cfo_report_md"]:
+            for k in [
+                "raw_records",
+                "mapping_confirmed",
+                "_csv_headers",
+                "cfo_report_md",
+                "rag_explain_md",
+            ]:
                 st.session_state.pop(k, None)
             st.session_state.raw_records = []
             st.rerun()
@@ -334,11 +356,22 @@ def _render_step_analyze(raw_records: list[dict[str, Any]]) -> None:
             )
 
         graph_df = filter_scored_df_by_graph_dates(scored_df, mode_key, d_from, d_to)
+        graph_node_radius = st.slider(
+            "Default graph node radius (pixels)",
+            min_value=6,
+            max_value=34,
+            value=13,
+            step=1,
+            key="graph_node_radius",
+            help="Adjust live in the graph toolbar as well.",
+        )
         if graph_df.empty:
             st.warning("No transactions match this date range.")
         else:
             st.caption(f"**{len(graph_df):,}** transactions in graph")
-            payload = build_cashflow_graph_payload(graph_df)
+            payload = build_cashflow_graph_payload(
+                graph_df, node_radius=float(graph_node_radius)
+            )
             components.html(render_graph_html(payload), height=650, scrolling=False)
 
     # All transactions ---
@@ -370,6 +403,33 @@ def _render_step_analyze(raw_records: list[dict[str, Any]]) -> None:
 
     # Audit report ---
     with tab_report:
+        if "_pending_cfo_kb_global_json" in st.session_state:
+            st.session_state["cfo_kb_global_json"] = st.session_state.pop(
+                "_pending_cfo_kb_global_json"
+            )
+        if "_pending_cfo_use_kb_global" in st.session_state:
+            st.session_state["cfo_use_kb_global"] = bool(
+                st.session_state.pop("_pending_cfo_use_kb_global")
+            )
+        st.session_state.setdefault("cfo_kb_global_json", "[]")
+
+        st.caption(
+            "Uses **OPENAI_API_KEY** from the environment or `.streamlit/secrets.toml`. "
+            "Builds categories from **flagged** transactions. Optional **global KB** (vector-retrieved learned patterns "
+            "for this dataset) is merged into the same prompt to strengthen the annex."
+        )
+        st.checkbox(
+            "Enhance CFO report with global KB snippets (RAG)",
+            key="cfo_use_kb_global",
+            help="Paste a JSON array of KB objects (e.g. top chunks from your vector DB for this file).",
+        )
+        if st.session_state.get("cfo_use_kb_global"):
+            st.text_area(
+                "Global KB — JSON array of objects (max 15 sent to the model)",
+                key="cfo_kb_global_json",
+                height=140,
+            )
+
         r1, r2, _ = st.columns([1, 1, 4])
         with r1:
             gen_clicked = st.button("Generate report", type="primary", key="cfo_generate_report")
@@ -380,17 +440,291 @@ def _render_step_analyze(raw_records: list[dict[str, Any]]) -> None:
 
         if gen_clicked:
             alerts = build_categorized_fraud_alerts(scored_df)
+            kb_global: list[dict[str, Any]] | None = None
+            if st.session_state.get("cfo_use_kb_global"):
+                try:
+                    parsed_g = json.loads(st.session_state.get("cfo_kb_global_json") or "[]")
+                except json.JSONDecodeError as exc:
+                    st.warning(f"Global KB JSON invalid ({exc}); report generated without KB.")
+                else:
+                    if isinstance(parsed_g, list) and all(isinstance(x, dict) for x in parsed_g):
+                        kb_global = parsed_g
+                    else:
+                        st.warning("Global KB must be a JSON array of objects; report generated without KB.")
             try:
                 with st.spinner("Calling OpenAI (gpt-4o)…"):
-                    report_md = generate_fraud_audit_report(alerts)
+                    report_md = generate_fraud_audit_report(
+                        alerts, kb_global_context=kb_global
+                    )
                 st.session_state["cfo_report_md"] = report_md
-            except ValueError:
-                st.warning("The AI report service is not configured. Please contact your administrator to enable this feature.")
+            except ValueError as exc:
+                st.error(str(exc))
+                st.info(
+                    "Add `OPENAI_API_KEY` to `.streamlit/secrets.toml` or set it in your shell before `streamlit run`."
+                )
 
         if st.session_state.get("cfo_report_md"):
             st.markdown(st.session_state["cfo_report_md"])
         else:
             st.caption("Click **Generate report** to produce a CFO audit summary via OpenAI.")
+
+        with st.expander("Local vector KB (Chroma)", expanded=False):
+            st.caption(
+                f"Embeddings are stored on disk at **{chroma_persist_path()}** (gitignored). "
+                "Uses OpenAI **text-embedding-3-small** — same `OPENAI_API_KEY` as the reports. "
+                "Upsert **learned patterns** (`build_vector_kb_document` JSON) and/or **index every flagged row** "
+                "so similarity search can fill the RAG fields."
+            )
+            try:
+                n_docs = chroma_document_count()
+            except ImportError:
+                st.error(
+                    "The `chromadb` package is not installed. Stop Streamlit, run `uv sync`, then restart."
+                )
+                n_docs = -1
+            except ValueError as exc:
+                st.warning(str(exc))
+                n_docs = -1
+            except Exception as exc:  # noqa: BLE001
+                st.warning(f"Chroma could not open: {exc}")
+                n_docs = -1
+            else:
+                st.metric("Documents in Chroma", n_docs if n_docs >= 0 else "—")
+
+            pv1, pv2, pv3 = st.columns([2, 1, 1])
+            with pv1:
+                chroma_preview_limit = st.number_input(
+                    "Preview row limit",
+                    min_value=10,
+                    max_value=500,
+                    value=100,
+                    step=10,
+                    key="chroma_preview_limit",
+                )
+            with pv2:
+                chroma_preview_offset = st.number_input(
+                    "Offset",
+                    min_value=0,
+                    max_value=100_000,
+                    value=0,
+                    step=50,
+                    key="chroma_preview_offset",
+                )
+            with pv3:
+                preview_btn = st.button("Preview Chroma contents", key="chroma_preview_btn")
+
+            if preview_btn:
+                try:
+                    rows, total = list_stored_documents(
+                        limit=int(chroma_preview_limit),
+                        offset=int(chroma_preview_offset),
+                    )
+                    st.caption(f"Showing **{len(rows)}** row(s); collection total **{total}**.")
+                    if rows:
+                        view = pd.DataFrame(rows)
+                        view["document"] = view["document"].astype(str).str.slice(0, 400)
+                        st.dataframe(view, use_container_width=True, hide_index=True)
+                    else:
+                        st.info("Collection is empty — upsert patterns or index flagged rows first.")
+                except ValueError as exc:
+                    st.error(str(exc))
+                except Exception as exc:  # noqa: BLE001
+                    st.error(str(exc))
+
+            if "chroma_patterns_json" not in st.session_state:
+                st.session_state["chroma_patterns_json"] = json.dumps(
+                    [
+                        build_vector_kb_document(
+                            "Payroll hub with many outbound wires; resembled mule fan-out but was consolidated "
+                            "treasury run by finance — closed as benign after KYC refresh.",
+                            outcome="False Positive",
+                            case_id="KB-DEMO-1",
+                            pattern_type="velocity_hub",
+                        ),
+                        build_vector_kb_document(
+                            "Bidirectional flows between corporate card and crypto off-ramps within 24h; SAR filed.",
+                            outcome="Confirmed Fraud",
+                            case_id="KB-DEMO-2",
+                            pattern_type="round_trip_crypto",
+                        ),
+                    ],
+                    ensure_ascii=False,
+                    indent=2,
+                )
+
+            st.text_area(
+                "Learned patterns — JSON array (`text_for_embedding` + `metadata`)",
+                key="chroma_patterns_json",
+                height=160,
+            )
+            cc1, cc2, cc3, cc4 = st.columns(4)
+            with cc1:
+                upsert_pat = st.button("Upsert patterns", key="chroma_btn_upsert_pat")
+            with cc2:
+                idx_flag = st.button("Index all flagged rows", key="chroma_btn_idx_flag")
+            with cc3:
+                chroma_k = st.number_input(
+                    "k per flagged txn", min_value=1, max_value=25, value=5, key="chroma_k"
+                )
+            with cc4:
+                chroma_gk = st.number_input(
+                    "k for global KB", min_value=1, max_value=30, value=12, key="chroma_gk"
+                )
+
+            push_map = st.button("Chroma → KB map (fills RAG textarea)", key="chroma_push_map")
+            push_glob = st.button("Chroma → global CFO KB", key="chroma_push_global")
+
+            if upsert_pat:
+                n_up, err = parse_and_upsert_learned_json(
+                    st.session_state.get("chroma_patterns_json") or "[]"
+                )
+                if err:
+                    st.error(f"Invalid JSON: {err}")
+                elif n_up == 0:
+                    st.warning(
+                        "Nothing to upsert (empty `text_for_embedding` or not an array of objects)."
+                    )
+                else:
+                    st.success(f"Upserted {n_up} pattern document(s) into Chroma.")
+
+            if idx_flag:
+                items_all = build_flagged_rag_items(scored_df)
+                try:
+                    n_idx = upsert_flagged_snapshots(items_all)
+                    st.success(f"Indexed {n_idx} flagged transaction snapshot(s).")
+                except ValueError as exc:
+                    st.error(str(exc))
+                except Exception as exc:  # noqa: BLE001
+                    st.error(str(exc))
+
+            if push_map:
+                try:
+                    kb_m = build_kb_map_from_chroma(
+                        scored_df,
+                        k_per_txn=int(chroma_k),
+                        max_flagged=200,
+                    )
+                    st.session_state["rag_kb_map_json"] = json.dumps(
+                        kb_m, ensure_ascii=False, indent=2
+                    )
+                    st.success(
+                        "KB map updated. Open **RAG: explain each flagged transaction** below if needed."
+                    )
+                except ValueError as exc:
+                    st.error(str(exc))
+                except Exception as exc:  # noqa: BLE001
+                    st.error(str(exc))
+
+            if push_glob:
+                try:
+                    gkb = global_kb_from_chroma_for_flagged(scored_df, k=int(chroma_gk))
+                    st.session_state["_pending_cfo_kb_global_json"] = json.dumps(
+                        gkb, ensure_ascii=False, indent=2
+                    )
+                    st.session_state["_pending_cfo_use_kb_global"] = True
+                    st.success(
+                        "Global KB JSON updated; CFO KB checkbox will be enabled after refresh."
+                    )
+                    st.rerun()
+                except ValueError as exc:
+                    st.error(str(exc))
+                except Exception as exc:  # noqa: BLE001
+                    st.error(str(exc))
+
+        st.session_state.setdefault("rag_kb_map_json", "{}")
+        with st.expander("RAG: explain each flagged transaction (vector KB)", expanded=False):
+            st.caption(
+                "Paste a ``transaction_id → [hits]`` map, **or** use **Local vector KB (Chroma)** above to auto-fill "
+                "from your on-disk store. You can also manage patterns with ``build_vector_kb_document`` in code / n8n."
+            )
+            st.text_area(
+                "KB by transaction_id — JSON object: each key is a transaction id, value is an array of KB objects",
+                key="rag_kb_map_json",
+                height=180,
+            )
+            rg1, rg2, rg3 = st.columns(3)
+            with rg1:
+                max_rag = st.number_input(
+                    "Max flagged rows",
+                    min_value=1,
+                    max_value=500,
+                    value=35,
+                    step=1,
+                    key="rag_max_rows",
+                )
+            with rg2:
+                rag_chunk = st.number_input(
+                    "Rows per API batch",
+                    min_value=1,
+                    max_value=25,
+                    value=10,
+                    step=1,
+                    key="rag_chunk",
+                )
+            with rg3:
+                rag_kb_cap = st.number_input(
+                    "Max KB hits per row",
+                    min_value=0,
+                    max_value=20,
+                    value=5,
+                    step=1,
+                    key="rag_kb_cap",
+                )
+
+            col_rg1, col_rg2 = st.columns([1, 2])
+            with col_rg1:
+                gen_rag = st.button("Generate RAG explanations", type="secondary", key="rag_gen")
+            with col_rg2:
+                if st.button("Clear RAG output", key="rag_clear"):
+                    st.session_state.pop("rag_explain_md", None)
+                    st.rerun()
+
+            if gen_rag:
+                try:
+                    kb_map_raw = json.loads(st.session_state.get("rag_kb_map_json") or "{}")
+                except json.JSONDecodeError as exc:
+                    st.error(f"KB map JSON is invalid: {exc}")
+                else:
+                    if not isinstance(kb_map_raw, dict):
+                        st.error("KB map must be a JSON object (transaction_id → array).")
+                    else:
+                        kb_map: dict[str, list[dict[str, Any]]] = {}
+                        bad_val = False
+                        for k, v in kb_map_raw.items():
+                            kid = str(k)
+                            if not isinstance(v, list):
+                                bad_val = True
+                                break
+                            if not all(isinstance(x, dict) for x in v):
+                                bad_val = True
+                                break
+                            kb_map[kid] = list(v)
+                        if bad_val:
+                            st.error("Each map value must be a JSON array of objects.")
+                        else:
+                            items = build_flagged_rag_items(scored_df)[: int(max_rag)]
+                            if not items:
+                                st.info("No flagged transactions in the current data — nothing to explain.")
+                            else:
+                                merged = attach_kb_by_transaction_id(items, kb_map)
+                                try:
+                                    with st.spinner(
+                                        "Calling OpenAI for per-transaction RAG explanations…"
+                                    ):
+                                        rag_md = generate_flagged_rag_explanations(
+                                            merged,
+                                            chunk_size=int(rag_chunk),
+                                            max_kb_per_item=int(rag_kb_cap),
+                                        )
+                                    st.session_state["rag_explain_md"] = rag_md
+                                except ValueError as exc:
+                                    st.error(str(exc))
+                                    st.info(
+                                        "Add `OPENAI_API_KEY` to `.streamlit/secrets.toml` or set it in your environment."
+                                    )
+
+            if st.session_state.get("rag_explain_md"):
+                st.markdown(st.session_state["rag_explain_md"])
 
 
 # ---------------------------------------------------------------------------
