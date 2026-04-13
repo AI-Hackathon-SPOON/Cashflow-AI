@@ -37,3 +37,6 @@ Thumbs.db
 
 # Jupyter
 .ipynb_checkpoints/
+
+# Local Chroma vector store (RAG)
+data/chroma_rag/
