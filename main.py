@@ -2,6 +2,7 @@
 
 from __future__ import annotations
 
+import hashlib
 import json
 import os
 from datetime import date
@@ -13,19 +14,28 @@ import streamlit.components.v1 as components
 
 from app.constants import AUTO_COLUMN_LABEL, MAPPING_CANONICAL_FIELDS
 from app.fraud_scoring import score_fraud_signals
-from app.fraud_report_openai import generate_flagged_rag_explanations, generate_fraud_audit_report
+from app.fraud_report_openai import (
+    generate_flagged_rag_explanations,
+    generate_fraud_audit_report,
+    generate_per_row_rag_explanation_map,
+)
 from app.fraud_report_payload import (
     attach_kb_by_transaction_id,
     build_categorized_fraud_alerts,
     build_flagged_rag_items,
+    build_scored_rag_items,
     build_vector_kb_document,
 )
 from app.rag_chroma import (
+    apply_kb_score_layer,
     build_kb_map_from_chroma,
     chroma_document_count,
     chroma_persist_path,
+    enhance_scored_with_chroma_kb,
     global_kb_from_chroma_for_flagged,
+    kb_score_layer_fingerprint,
     list_stored_documents,
+    pack_kb_score_layer,
     parse_and_upsert_learned_json,
     upsert_flagged_snapshots,
 )
@@ -90,6 +100,24 @@ def _append_records(new_records: list[dict[str, Any]], source_name: str) -> None
         return
     st.session_state.raw_records.extend(new_records)
     st.toast(f"Added {len(new_records)} record(s) from {source_name}.", icon="✅")
+
+
+def _llm_row_fingerprint(scored_df: pd.DataFrame, *, flagged_only: bool) -> str:
+    """Detect when scoring rows changed so cached LLM explanations are not shown stale."""
+    if scored_df.empty or "is_flagged" not in scored_df.columns:
+        return ""
+    sub = scored_df.loc[scored_df["is_flagged"]] if flagged_only else scored_df
+    pairs: list[tuple[str, int, str]] = []
+    for _, r in sub.iterrows():
+        pairs.append(
+            (
+                str(r.get("transaction_id", "")),
+                int(r.get("fraud_score", 0)),
+                str(r.get("fraud_reasons", "")),
+            )
+        )
+    pairs.sort()
+    return hashlib.sha256(json.dumps(pairs, ensure_ascii=False).encode("utf-8")).hexdigest()
 
 
 def _explicit_column_mapping() -> dict[str, str] | None:
@@ -295,7 +323,136 @@ def _render_step_analyze(raw_records: list[dict[str, Any]]) -> None:
         return
 
     normalized_df = pd.DataFrame(normalized_records)
-    scored_df = score_fraud_signals(normalized_df)
+    scored_base = score_fraud_signals(normalized_df)
+    fp_kb = kb_score_layer_fingerprint(scored_base)
+
+    with st.expander("Chroma KB → adjust fraud scores (learned patterns)", expanded=False):
+        st.caption(
+            "Store **learned patterns** in Chroma (see *Local vector KB* below) with metadata ``outcome`` such as "
+            "**Confirmed Fraud** or **False Positive**. Only ``learned_pattern`` documents adjust scores. "
+            "**Confirmed fraud** raises ``fraud_score``; **false positive** can optionally **lower** it (checkbox below) "
+            "unless a qualifying confirmed-fraud precedent exists for that row. Column **kb_score_boost** is the "
+            "**signed** delta from this layer (negative when FP penalty applies)."
+        )
+        kb_s1, kb_s2, kb_s3 = st.columns(3)
+        with kb_s1:
+            kb_sc_k = st.number_input("k neighbors", min_value=1, max_value=25, value=5, key="kb_sc_k")
+        with kb_s2:
+            kb_sc_max_rows = st.number_input(
+                "Max rows to scan",
+                min_value=10,
+                max_value=800,
+                value=400,
+                step=10,
+                key="kb_sc_max_rows",
+            )
+        with kb_s3:
+            kb_sc_boost = st.number_input(
+                "Confirmed-fraud boost (points)",
+                min_value=0,
+                max_value=40,
+                value=12,
+                step=1,
+                key="kb_sc_boost",
+            )
+        kb_dmax = st.number_input(
+            "Max vector distance (0 = no limit)",
+            min_value=0.0,
+            max_value=2.0,
+            value=0.55,
+            step=0.05,
+            format="%.2f",
+            key="kb_sc_dmax",
+            help="Tune to your embedding space; stricter = smaller value. Zero disables distance gating.",
+        )
+        kb_bs = st.number_input(
+            "Chroma batch size",
+            min_value=1,
+            max_value=64,
+            value=24,
+            step=1,
+            key="kb_sc_batch",
+        )
+        kb_sc_fp_reduce = st.checkbox(
+            "Reduce scores on strong false-positive precedents",
+            value=False,
+            key="kb_sc_fp_reduce",
+            help="Learned patterns only; skipped if a qualifying confirmed-fraud precedent exists. Capped per row.",
+        )
+        fp1, fp2, fp3 = st.columns(3)
+        with fp1:
+            kb_sc_fp_pen = st.number_input(
+                "FP penalty (points)",
+                min_value=1,
+                max_value=40,
+                value=10,
+                step=1,
+                key="kb_sc_fp_pen",
+                disabled=not kb_sc_fp_reduce,
+            )
+        with fp2:
+            kb_sc_fp_cap = st.number_input(
+                "FP penalty cap per row",
+                min_value=1,
+                max_value=50,
+                value=20,
+                step=1,
+                key="kb_sc_fp_cap",
+                disabled=not kb_sc_fp_reduce,
+            )
+        with fp3:
+            kb_sc_fp_floor = st.number_input(
+                "Score floor after FP penalty",
+                min_value=0,
+                max_value=100,
+                value=0,
+                step=1,
+                key="kb_sc_fp_floor",
+                disabled=not kb_sc_fp_reduce,
+                help="Penalty will not reduce fraud_score below this value.",
+            )
+        if kb_sc_fp_reduce:
+            st.info(
+                "FP penalties never apply when a **learned** **Confirmed Fraud** match qualifies for that row; "
+                "distance limits still apply; use the floor to avoid driving scores to zero."
+            )
+        kc1, kc2 = st.columns(2)
+        with kc1:
+            if st.button("Apply Chroma KB to fraud scores", key="kb_sc_apply"):
+                try:
+                    dist_cap = float(kb_dmax) if float(kb_dmax) > 0 else None
+                    fp_pen = int(kb_sc_fp_pen) if kb_sc_fp_reduce else 0
+                    enhanced = enhance_scored_with_chroma_kb(
+                        scored_base,
+                        k=int(kb_sc_k),
+                        max_rows=int(kb_sc_max_rows),
+                        batch_size=int(kb_bs),
+                        confirmed_boost=int(kb_sc_boost),
+                        distance_max=dist_cap,
+                        false_positive_penalty=fp_pen,
+                        false_positive_penalty_cap=int(kb_sc_fp_cap),
+                        fp_score_floor=int(kb_sc_fp_floor),
+                    )
+                    st.session_state["kb_score_layer"] = pack_kb_score_layer(enhanced, base_fp=fp_kb)
+                    st.success("KB score layer saved for this dataset (persists across reruns until data changes).")
+                    st.rerun()
+                except ValueError as exc:
+                    st.error(str(exc))
+                except Exception as exc:  # noqa: BLE001
+                    st.error(f"Chroma KB scoring failed: {exc}")
+        with kc2:
+            if st.button("Clear KB score layer", key="kb_sc_clear"):
+                st.session_state.pop("kb_score_layer", None)
+                st.rerun()
+
+        layer_chk = st.session_state.get("kb_score_layer")
+        if isinstance(layer_chk, dict) and layer_chk.get("by_tid") and layer_chk.get("fp") != fp_kb:
+            st.warning(
+                "Saved KB score layer no longer matches the current transactions or base scores — apply again or clear."
+            )
+
+    layer_pkg = st.session_state.get("kb_score_layer")
+    scored_df = apply_kb_score_layer(scored_base, layer_pkg if isinstance(layer_pkg, dict) else None)
 
     # --- Top bar: metrics + actions ---
     mc1, mc2, mc3, mc4, mc5 = st.columns([1, 1, 1, 1.2, 1.2], vertical_alignment="bottom")
@@ -319,13 +476,155 @@ def _render_step_analyze(raw_records: list[dict[str, Any]]) -> None:
             st.session_state.raw_records = []
             st.rerun()
 
-    # --- Tabs ---
+    st.markdown("### LLM + RAG row explanations (OpenAI + optional Chroma)")
+    st.caption(
+        "Adds column **llm_rag_explanation** to the tables below: same idea as the CFO report — model grounds on "
+        "rule-based fields plus retrieved KB chunks. Use **Chroma → KB map** or automatic Chroma query here."
+    )
+    t1, t2, t3 = st.columns(3)
+    with t1:
+        table_llm_flagged_only = st.checkbox(
+            "Only flagged rows",
+            value=True,
+            key="table_llm_flagged_only",
+            help="If off, explains every row (more API calls).",
+        )
+    with t2:
+        table_llm_auto_chroma = st.checkbox(
+            "Auto-query Chroma for KB",
+            value=True,
+            key="table_llm_auto_chroma",
+            help="If off, uses the KB map JSON from **RAG: explain each flagged transaction** (must be valid).",
+        )
+    with t3:
+        table_llm_max_rows = st.number_input(
+            "Max rows to explain",
+            min_value=1,
+            max_value=500,
+            value=50,
+            step=1,
+            key="table_llm_max_rows",
+        )
+    t4, t5, t6 = st.columns(3)
+    with t4:
+        table_llm_chunk = st.number_input(
+            "Rows per API batch",
+            min_value=1,
+            max_value=25,
+            value=10,
+            step=1,
+            key="table_llm_chunk",
+        )
+    with t5:
+        table_llm_kb_cap = st.number_input(
+            "Max KB hits per row",
+            min_value=0,
+            max_value=20,
+            value=5,
+            step=1,
+            key="table_llm_kb_cap",
+        )
+    with t6:
+        table_llm_chroma_k = st.number_input(
+            "Chroma k (when auto)",
+            min_value=1,
+            max_value=25,
+            value=5,
+            step=1,
+            key="table_llm_chroma_k",
+        )
+    b1, b2 = st.columns([1, 2])
+    with b1:
+        gen_table_llm = st.button("Generate LLM+RAG column", type="primary", key="table_llm_generate")
+    with b2:
+        if st.button("Clear LLM+RAG column cache", key="table_llm_clear"):
+            st.session_state.pop("per_row_llm_map", None)
+            st.session_state.pop("per_row_llm_fingerprint", None)
+            st.session_state.pop("per_row_llm_flagged_only", None)
+            st.rerun()
+
+    if gen_table_llm:
+        items_base = build_scored_rag_items(scored_df, flagged_only=bool(table_llm_flagged_only))[
+            : int(table_llm_max_rows)
+        ]
+        if not items_base:
+            st.info("No rows to explain with the current filters.")
+        else:
+            kb_map: dict[str, list[dict[str, Any]]] = {}
+            if table_llm_auto_chroma:
+                try:
+                    kb_map = build_kb_map_from_chroma(
+                        scored_df,
+                        k_per_txn=int(table_llm_chroma_k),
+                        max_flagged=max(len(items_base), int(table_llm_max_rows)),
+                        flagged_only=bool(table_llm_flagged_only),
+                    )
+                except ValueError as exc:
+                    st.warning(f"Chroma unavailable ({exc}); trying pasted KB map only.")
+                except Exception as exc:  # noqa: BLE001
+                    st.warning(f"Chroma query failed ({exc}); trying pasted KB map only.")
+            if not kb_map and not table_llm_auto_chroma:
+                try:
+                    kb_map_raw = json.loads(st.session_state.get("rag_kb_map_json") or "{}")
+                except json.JSONDecodeError as exc:
+                    st.error(f"KB map JSON is invalid: {exc}")
+                    kb_map_raw = None
+                if isinstance(kb_map_raw, dict):
+                    for k, v in kb_map_raw.items():
+                        if isinstance(v, list) and all(isinstance(x, dict) for x in v):
+                            kb_map[str(k)] = list(v)
+            elif not kb_map and table_llm_auto_chroma:
+                try:
+                    kb_map_raw = json.loads(st.session_state.get("rag_kb_map_json") or "{}")
+                    if isinstance(kb_map_raw, dict):
+                        for k, v in kb_map_raw.items():
+                            if isinstance(v, list) and all(isinstance(x, dict) for x in v):
+                                kb_map[str(k)] = list(v)
+                except json.JSONDecodeError:
+                    pass
+
+            merged_items = attach_kb_by_transaction_id(items_base, kb_map)
+            try:
+                with st.spinner("OpenAI: per-row explanations (JSON)…"):
+                    row_map = generate_per_row_rag_explanation_map(
+                        merged_items,
+                        chunk_size=int(table_llm_chunk),
+                        max_kb_per_item=int(table_llm_kb_cap),
+                    )
+                st.session_state["per_row_llm_map"] = row_map
+                st.session_state["per_row_llm_fingerprint"] = _llm_row_fingerprint(
+                    scored_df, flagged_only=bool(table_llm_flagged_only)
+                )
+                st.session_state["per_row_llm_flagged_only"] = bool(table_llm_flagged_only)
+                st.success(f"Filled **llm_rag_explanation** for {len(row_map)} row(s).")
+                st.rerun()
+            except ValueError as exc:
+                st.error(str(exc))
+                st.info("Add `OPENAI_API_KEY` to `.streamlit/secrets.toml` or set it in your environment.")
+
+    fp_mode = bool(st.session_state.get("per_row_llm_flagged_only", True))
+    fp_now = _llm_row_fingerprint(scored_df, flagged_only=fp_mode)
+    cached_fp = st.session_state.get("per_row_llm_fingerprint")
+    row_llm_session = dict(st.session_state.get("per_row_llm_map") or {})
+    if cached_fp is not None and cached_fp != fp_now:
+        row_llm_map: dict[str, str] = {}
+        st.warning(
+            "LLM row explanations are hidden until you regenerate — scored data no longer matches the cached run."
+        )
+    elif cached_fp == fp_now:
+        row_llm_map = row_llm_session
+    else:
+        row_llm_map = {}
+
+    display_df = scored_df.copy()
+    display_df["llm_rag_explanation"] = display_df["transaction_id"].astype(str).map(
+        lambda tid: row_llm_map.get(tid, "")
+    )
+    display_df["timestamp"] = display_df["timestamp"].dt.strftime("%Y-%m-%d %H:%M:%S %Z")
+
     tab_graph, tab_table, tab_flagged, tab_report = st.tabs(
         ["🔗 Graph", "📋 All Transactions", "🚩 Flagged", "📝 Audit Report"]
     )
-
-    display_df = scored_df.copy()
-    display_df["timestamp"] = display_df["timestamp"].dt.strftime("%Y-%m-%d %H:%M:%S %Z")
 
     # Graph ---
     with tab_graph:
@@ -377,11 +676,25 @@ def _render_step_analyze(raw_records: list[dict[str, Any]]) -> None:
     # All transactions ---
     with tab_table:
         st.dataframe(
-            display_df[[
-                "transaction_id", "timestamp", "source_account", "destination_account",
-                "amount", "currency", "channel", "fraud_score", "is_flagged", "fraud_reasons",
-            ]],
-            use_container_width=True, hide_index=True, height=520,
+            display_df[
+                [
+                    "transaction_id",
+                    "timestamp",
+                    "source_account",
+                    "destination_account",
+                    "amount",
+                    "currency",
+                    "channel",
+                    "fraud_score",
+                    "kb_score_boost",
+                    "is_flagged",
+                    "fraud_reasons",
+                    "llm_rag_explanation",
+                ]
+            ],
+            use_container_width=True,
+            hide_index=True,
+            height=520,
         )
         csv_data = display_df.to_csv(index=False).encode("utf-8")
         st.download_button("⬇ Download CSV", data=csv_data,
@@ -392,11 +705,22 @@ def _render_step_analyze(raw_records: list[dict[str, Any]]) -> None:
         flagged_df = display_df[display_df["is_flagged"]]
         if not flagged_df.empty:
             st.dataframe(
-                flagged_df[[
-                    "transaction_id", "timestamp", "source_account", "destination_account",
-                    "amount", "fraud_score", "fraud_reasons",
-                ]],
-                use_container_width=True, hide_index=True, height=520,
+                flagged_df[
+                    [
+                        "transaction_id",
+                        "timestamp",
+                        "source_account",
+                        "destination_account",
+                        "amount",
+                        "fraud_score",
+                        "kb_score_boost",
+                        "fraud_reasons",
+                        "llm_rag_explanation",
+                    ]
+                ],
+                use_container_width=True,
+                hide_index=True,
+                height=520,
             )
         else:
             st.success("No transactions currently exceed the fraud threshold.")

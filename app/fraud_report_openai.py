@@ -93,6 +93,45 @@ def _openai_chat_markdown(
         )
 
 
+def _openai_chat_json_object(
+    *,
+    system_prompt: str,
+    user_prompt: str,
+    model: str,
+    timeout: float,
+) -> dict[str, Any]:
+    """Chat completion with ``response_format`` JSON object; returns parsed dict or ``{"_error": ...}``."""
+    api_key = _require_openai_api_key()
+    try:
+        client = OpenAI(api_key=api_key, timeout=timeout)
+        response = client.chat.completions.create(
+            model=model,
+            temperature=0.25,
+            response_format={"type": "json_object"},
+            messages=[
+                {"role": "system", "content": system_prompt},
+                {"role": "user", "content": user_prompt},
+            ],
+        )
+        raw = (response.choices[0].message.content or "").strip()
+        if not raw:
+            return {"_error": "empty_response"}
+        parsed = json.loads(raw)
+        return parsed if isinstance(parsed, dict) else {"_error": "not_a_json_object"}
+    except json.JSONDecodeError as e:
+        return {"_error": f"json_decode: {e}"}
+    except RateLimitError as e:
+        return {"_error": f"rate_limit: {type(e).__name__}"}
+    except APITimeoutError as e:
+        return {"_error": f"timeout: {type(e).__name__}"}
+    except APIConnectionError as e:
+        return {"_error": f"connection: {type(e).__name__}: {e}"}
+    except APIStatusError as e:
+        return {"_error": f"http_{getattr(e, 'status_code', 'unknown')}: {e}"}
+    except Exception as e:  # noqa: BLE001
+        return {"_error": f"{type(e).__name__}: {e}"}
+
+
 def _build_user_prompt(
     payload_json: str,
     category_keys_present: list[str],
@@ -299,6 +338,95 @@ For **every** object in this array, output Markdown using this template (repeat 
 - **Actions recommandées** — numbered list, max 4 concrete controls (KYC, freeze, sample review, etc.).
 
 Do not omit any transaction in this batch."""
+
+
+ROW_RAG_JSON_SYSTEM_PROMPT = """You are a financial crime compliance analyst.
+You explain transactions using structured scoring fields and optional retrieved knowledge (RAG). KB chunks are hints only;
+if they do not match the transaction, say so. Never invent facts outside the JSON you receive.
+You respond with **only** valid JSON (no markdown fences, no commentary)."""
+
+
+def _build_row_explanation_json_user_prompt(batch: list[dict[str, Any]], batch_index: int, batch_total: int) -> str:
+    body = json.dumps(batch, ensure_ascii=False, indent=2)
+    ids_list = [str(x.get("transaction_id", "")) for x in batch]
+    return f"""Process **batch {batch_index} of {batch_total}**.
+
+**Input JSON** (each item: transaction_id, transaction, kb_retrievals):
+```json
+{body}
+```
+
+Return **one JSON object** with this exact shape:
+{{"explanations": {{ "<transaction_id>": "<string>", ... }} }}
+
+Rules:
+- Include **every** transaction_id from this batch exactly once as a key. Expected ids: {json.dumps(ids_list, ensure_ascii=False)}.
+- Each value is a single plain-text explanation (3–8 sentences): facts from ``transaction``, how ``kb_retrievals`` relates or that none were provided, risk interpretation, and 1–3 concrete next steps when the row is flagged; for non-flagged rows, briefly justify low monitoring priority vs any weak KB parallels.
+- Professional French unless the transaction text is predominantly English."""
+
+
+def generate_per_row_rag_explanation_map(
+    items: list[dict[str, Any]],
+    *,
+    chunk_size: int = 10,
+    max_kb_per_item: int = 5,
+    model: str = "gpt-4o",
+    timeout: float = 180.0,
+) -> dict[str, str]:
+    """
+    For each item (same shape as :func:`generate_flagged_rag_explanations`), call the LLM and collect
+    ``transaction_id -> explanation`` strings. Uses JSON response mode for stable parsing.
+
+    On partial API errors, missing ids are omitted from the result; callers may retry.
+    """
+    max_kb = max(0, int(max_kb_per_item))
+    normalized: list[dict[str, Any]] = []
+    for raw in items:
+        n = _normalize_rag_item(raw, max_kb_per_item=max_kb)
+        if n is not None:
+            normalized.append(n)
+
+    if not normalized:
+        return {}
+
+    cs = max(1, min(int(chunk_size), 25))
+    batches: list[list[dict[str, Any]]] = []
+    for i in range(0, len(normalized), cs):
+        batches.append(normalized[i : i + cs])
+
+    out: dict[str, str] = {}
+    for idx, batch in enumerate(batches, start=1):
+        user_prompt = _build_row_explanation_json_user_prompt(batch, idx, len(batches))
+        payload = _openai_chat_json_object(
+            system_prompt=ROW_RAG_JSON_SYSTEM_PROMPT,
+            user_prompt=user_prompt,
+            model=model,
+            timeout=timeout,
+        )
+        if "_error" in payload:
+            for it in batch:
+                tid = str(it.get("transaction_id", ""))
+                if tid:
+                    out[tid] = f"[LLM error: {payload['_error']}]"
+            continue
+        expl = payload.get("explanations")
+        if not isinstance(expl, dict):
+            for it in batch:
+                tid = str(it.get("transaction_id", ""))
+                if tid:
+                    out[tid] = "[LLM error: invalid explanations object]"
+            continue
+        for it in batch:
+            tid = str(it.get("transaction_id", ""))
+            if not tid:
+                continue
+            val = expl.get(tid)
+            if isinstance(val, str) and val.strip():
+                out[tid] = val.strip()
+            else:
+                out[tid] = "[LLM error: missing explanation for this transaction_id]"
+
+    return out
 
 
 def generate_flagged_rag_explanations(

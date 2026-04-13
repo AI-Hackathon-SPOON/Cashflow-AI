@@ -77,10 +77,20 @@ def build_flagged_rag_items(scored_df: pd.DataFrame) -> list[dict[str, Any]]:
     Your pipeline (e.g. n8n + vector DB) should fill ``kb_retrievals`` per ``transaction_id`` via
     :func:`attach_kb_by_transaction_id`.
     """
+    return build_scored_rag_items(scored_df, flagged_only=True)
+
+
+def build_scored_rag_items(scored_df: pd.DataFrame, *, flagged_only: bool = True) -> list[dict[str, Any]]:
+    """
+    One object per row (flagged only, or entire scored frame) for RAG / per-row LLM prompts.
+
+    Each item is ``{"transaction_id", "transaction", "kb_retrievals"}`` with ``kb_retrievals`` initially empty.
+    """
     if scored_df.empty or "is_flagged" not in scored_df.columns:
         return []
+    subset = scored_df.loc[scored_df["is_flagged"]] if flagged_only else scored_df
     out: list[dict[str, Any]] = []
-    for _, row in scored_df.loc[scored_df["is_flagged"]].iterrows():
+    for _, row in subset.iterrows():
         tid = str(row.get("transaction_id", ""))
         out.append(
             {
