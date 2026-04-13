@@ -165,6 +165,43 @@ def merge_node_transaction_details(
     return out
 
 
+def build_edge_transaction_details(
+    graph_df: pd.DataFrame,
+    account_to_canon: dict[str, str],
+    *,
+    max_per_edge: int = 50,
+) -> dict[str, list[dict[str, Any]]]:
+    """Per canonical source→target pair, the individual transactions on that edge."""
+    out: dict[str, list[dict[str, Any]]] = defaultdict(list)
+    if graph_df.empty:
+        return {}
+
+    rows = graph_df.sort_values("timestamp", ascending=False)
+    for _, r in rows.iterrows():
+        s_raw = str(r["source_account"])
+        d_raw = str(r["destination_account"])
+        s_can = account_to_canon.get(s_raw, s_raw)
+        d_can = account_to_canon.get(d_raw, d_raw)
+        if s_can == d_can:
+            continue
+        key = f"{s_can}||{d_can}"
+        if len(out[key]) >= max_per_edge:
+            continue
+        ts = r["timestamp"]
+        out[key].append({
+            "transaction_id": str(r["transaction_id"]),
+            "amount": float(r["amount"]),
+            "abs_amount": float(r["abs_amount"]),
+            "currency": str(r["currency"]),
+            "timestamp": ts.isoformat() if isinstance(ts, pd.Timestamp) else str(ts),
+            "fraud_score": int(r["fraud_score"]),
+            "is_flagged": bool(r["is_flagged"]),
+            "fraud_reasons": str(r["fraud_reasons"]),
+            "channel": str(r.get("channel", "")),
+        })
+    return dict(out)
+
+
 def build_cashflow_graph_payload(
     scored_df: pd.DataFrame,
     *,
@@ -179,6 +216,7 @@ def build_cashflow_graph_payload(
             "node_radius": float(node_radius),
             "collision_radius": cr,
             "node_details": {},
+            "edge_details": {},
             "merge_applied": False,
             "merged_entity_groups": 0,
         }
@@ -249,6 +287,8 @@ def build_cashflow_graph_payload(
         max_per_canonical=merged_cap,
     )
 
+    edge_details = build_edge_transaction_details(scored_df, account_to_canon)
+
     merge_applied = n_merge_groups > 0
     return {
         "nodes": nodes,
@@ -256,6 +296,7 @@ def build_cashflow_graph_payload(
         "node_radius": float(node_radius),
         "collision_radius": cr,
         "node_details": node_details,
+        "edge_details": edge_details,
         "merge_applied": merge_applied,
         "merged_entity_groups": n_merge_groups,
     }
