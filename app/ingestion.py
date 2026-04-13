@@ -3,9 +3,11 @@
 from __future__ import annotations
 
 import csv
+import copy
 import io
 import json
 import re
+from datetime import datetime, timedelta, timezone
 from typing import Any
 
 import pandas as pd
@@ -213,52 +215,155 @@ def parse_json_payload(json_text: str) -> list[dict[str, Any]]:
     return [item for item in payload if isinstance(item, dict)]
 
 
-def sample_records() -> list[dict[str, Any]]:
-    return [
-        {
-            "txn_id": "TXN-1001",
-            "date": "2026-04-10T08:15:00Z",
-            "from_account": "Payroll",
-            "to_account": "ACC-001",
-            "amt": 3500,
-            "ccy": "USD",
-            "method": "wire",
-            "memo": "Monthly salary",
-        },
-        {
-            "id": "TXN-1002",
-            "timestamp": "2026-04-10T08:18:00Z",
-            "source": "ACC-001",
-            "destination": "WALLET-7",
-            "amount": 3300,
-            "currency": "USD",
-            "type": "instant_transfer",
-        },
-        {
-            "reference": "TXN-1003",
-            "datetime": "2026-04-10T08:19:00Z",
-            "sender": "ACC-001",
-            "receiver": "WALLET-8",
-            "value": 3200,
-            "currency": "USD",
-            "details": "split payment",
-        },
-        {
-            "id": "TXN-1004",
-            "timestamp": "2026-04-10T02:03:00Z",
-            "source": "WALLET-8",
-            "destination": "CRYPTO-EXCHANGE",
-            "amount": 3000,
-            "currency": "USD",
-            "channel": "crypto",
-        },
-        {
-            "id": "TXN-1005",
-            "timestamp": "2026-04-10T11:20:00Z",
-            "source": "ACC-002",
-            "destination": "VENDOR-9",
-            "amount": 175.25,
-            "currency": "USD",
-            "description": "Office supplies",
-        },
-    ]
+_SAMPLE_DEMO_CHAIN: list[dict[str, Any]] = [
+    {
+        "txn_id": "TXN-1001",
+        "date": "2026-04-10T08:15:00Z",
+        "from_account": "Payroll",
+        "to_account": "ACC-001",
+        "amt": 3500,
+        "ccy": "USD",
+        "method": "wire",
+        "memo": "Monthly salary",
+    },
+    {
+        "id": "TXN-1002",
+        "timestamp": "2026-04-10T08:18:00Z",
+        "source": "ACC-001",
+        "destination": "WALLET-7",
+        "amount": 3300,
+        "currency": "USD",
+        "type": "instant_transfer",
+    },
+    {
+        "reference": "TXN-1003",
+        "datetime": "2026-04-10T08:19:00Z",
+        "sender": "ACC-001",
+        "receiver": "WALLET-8",
+        "value": 3200,
+        "currency": "USD",
+        "details": "split payment",
+    },
+    {
+        "id": "TXN-1004",
+        "timestamp": "2026-04-10T02:03:00Z",
+        "source": "WALLET-8",
+        "destination": "CRYPTO-EXCHANGE",
+        "amount": 3000,
+        "currency": "USD",
+        "channel": "crypto",
+    },
+    {
+        "id": "TXN-1005",
+        "timestamp": "2026-04-10T11:20:00Z",
+        "source": "ACC-002",
+        "destination": "VENDOR-9",
+        "amount": 175.25,
+        "currency": "USD",
+        "description": "Office supplies",
+    },
+]
+
+_ID_KEYS = frozenset({"txn_id", "id", "reference"})
+_TIME_KEYS = frozenset({"date", "timestamp", "datetime"})
+
+
+def _parse_iso_utc(s: str) -> datetime:
+    s2 = s.strip().replace("Z", "+00:00")
+    dt = datetime.fromisoformat(s2)
+    if dt.tzinfo is None:
+        dt = dt.replace(tzinfo=timezone.utc)
+    return dt.astimezone(timezone.utc)
+
+
+def _format_iso_utc_z(dt: datetime) -> str:
+    return dt.astimezone(timezone.utc).strftime("%Y-%m-%dT%H:%M:%SZ")
+
+
+def _clone_demo_instance(templates: list[dict[str, Any]], instance_idx: int) -> list[dict[str, Any]]:
+    """One full pass of the 5-row demo; instance 0 keeps original ids/times, later instances get new ids + offsets."""
+    out: list[dict[str, Any]] = []
+    hours_shift = instance_idx * 30
+    for rec in templates:
+        row = copy.deepcopy(rec)
+        if instance_idx > 0:
+            for k in _ID_KEYS:
+                if k in row and isinstance(row[k], str) and row[k].strip():
+                    row[k] = f"I{instance_idx}-{row[k]}"
+            for k in _TIME_KEYS:
+                if k in row and isinstance(row[k], str) and "T" in row[k]:
+                    try:
+                        row[k] = _format_iso_utc_z(_parse_iso_utc(row[k]) + timedelta(hours=hours_shift))
+                    except (ValueError, TypeError):
+                        pass
+        out.append(row)
+    return out
+
+
+def _padding_transactions(start_seq: int, count: int) -> list[dict[str, Any]]:
+    """Low-signal rows to reach a target length (mixed keys like the demo)."""
+    rows: list[dict[str, Any]] = []
+    base = datetime(2026, 4, 12, 9, 0, tzinfo=timezone.utc)
+    for j in range(count):
+        seq = start_seq + j + 1
+        ts = _format_iso_utc_z(base + timedelta(hours=j * 2))
+        if j % 3 == 0:
+            rows.append(
+                {
+                    "txn_id": f"TXN-PAD-{seq}",
+                    "date": ts,
+                    "from_account": f"ACC-BASE-{(j % 4) + 1}",
+                    "to_account": f"VENDOR-{(j % 6) + 20}",
+                    "amt": float(45 + (j % 15) * 11),
+                    "ccy": "USD",
+                    "method": "ach",
+                    "memo": "Routine vendor payment",
+                }
+            )
+        elif j % 3 == 1:
+            rows.append(
+                {
+                    "id": f"TXN-PAD-{seq}",
+                    "timestamp": ts,
+                    "source": f"ACC-BASE-{(j % 4) + 1}",
+                    "destination": f"VENDOR-{(j % 6) + 20}",
+                    "amount": float(120 + (j % 9) * 5),
+                    "currency": "USD",
+                    "type": "wire",
+                }
+            )
+        else:
+            rows.append(
+                {
+                    "reference": f"TXN-PAD-{seq}",
+                    "datetime": ts,
+                    "sender": f"ACC-BASE-{(j % 4) + 1}",
+                    "receiver": f"VENDOR-{(j % 6) + 20}",
+                    "value": float(88.5 + j),
+                    "currency": "USD",
+                    "details": "Recurring fee",
+                }
+            )
+    return rows
+
+
+def sample_records(*, total_count: int = 5, pattern_instances: int = 1) -> list[dict[str, Any]]:
+    """
+    Built-in synthetic transactions for demos.
+
+    :param total_count: Target number of rows in the returned list (capped in the UI).
+    :param pattern_instances: How many times the **5-transaction** fraud-demo chain is concatenated
+        (distinct ids/times per instance). If ``total_count`` is larger, mundane **padding** rows are appended.
+        If smaller, the list is truncated to ``total_count``.
+    """
+    templates = _SAMPLE_DEMO_CHAIN
+    pi = max(1, int(pattern_instances))
+    tn = max(1, int(total_count))
+    built: list[dict[str, Any]] = []
+    for i in range(pi):
+        built.extend(_clone_demo_instance(templates, i))
+    if len(built) > tn:
+        return built[:tn]
+    if len(built) < tn:
+        built.extend(_padding_transactions(len(built), tn - len(built)))
+    return built
