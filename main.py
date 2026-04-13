@@ -727,6 +727,8 @@ def _render_step_analyze(raw_records: list[dict[str, Any]]) -> None:
 
     # Audit report ---
     with tab_report:
+        # Chroma → CFO must not assign to widget-bound keys after those widgets run (same script run).
+        # Pending values are applied here, before ``cfo_kb_global_json`` / ``cfo_use_kb_global`` widgets mount.
         if "_pending_cfo_kb_global_json" in st.session_state:
             st.session_state["cfo_kb_global_json"] = st.session_state.pop(
                 "_pending_cfo_kb_global_json"
@@ -737,6 +739,7 @@ def _render_step_analyze(raw_records: list[dict[str, Any]]) -> None:
             )
         st.session_state.setdefault("cfo_kb_global_json", "[]")
 
+        st.markdown("### CFO audit report (OpenAI)")
         st.caption(
             "Uses **OPENAI_API_KEY** from the environment or `.streamlit/secrets.toml`. "
             "Builds categories from **flagged** transactions. Optional **global KB** (vector-retrieved learned patterns "
@@ -754,10 +757,10 @@ def _render_step_analyze(raw_records: list[dict[str, Any]]) -> None:
                 height=140,
             )
 
-        r1, r2, _ = st.columns([1, 1, 4])
-        with r1:
+        col_rep1, col_rep2 = st.columns([1, 2])
+        with col_rep1:
             gen_clicked = st.button("Generate report", type="primary", key="cfo_generate_report")
-        with r2:
+        with col_rep2:
             if st.button("Clear report", key="cfo_clear_report"):
                 st.session_state.pop("cfo_report_md", None)
                 st.rerun()
@@ -777,15 +780,11 @@ def _render_step_analyze(raw_records: list[dict[str, Any]]) -> None:
                         st.warning("Global KB must be a JSON array of objects; report generated without KB.")
             try:
                 with st.spinner("Calling OpenAI (gpt-4o)…"):
-                    report_md = generate_fraud_audit_report(
-                        alerts, kb_global_context=kb_global
-                    )
+                    report_md = generate_fraud_audit_report(alerts, kb_global_context=kb_global)
                 st.session_state["cfo_report_md"] = report_md
             except ValueError as exc:
                 st.error(str(exc))
-                st.info(
-                    "Add `OPENAI_API_KEY` to `.streamlit/secrets.toml` or set it in your shell before `streamlit run`."
-                )
+                st.info("Add `OPENAI_API_KEY` to `.streamlit/secrets.toml` or set it in your shell before `streamlit run`.")
 
         if st.session_state.get("cfo_report_md"):
             st.markdown(st.session_state["cfo_report_md"])
@@ -802,9 +801,7 @@ def _render_step_analyze(raw_records: list[dict[str, Any]]) -> None:
             try:
                 n_docs = chroma_document_count()
             except ImportError:
-                st.error(
-                    "The `chromadb` package is not installed. Stop Streamlit, run `uv sync`, then restart."
-                )
+                st.error("The `chromadb` package is not installed. Stop Streamlit, run `uv sync`, then restart.")
                 n_docs = -1
             except ValueError as exc:
                 st.warning(str(exc))
@@ -887,27 +884,19 @@ def _render_step_analyze(raw_records: list[dict[str, Any]]) -> None:
             with cc2:
                 idx_flag = st.button("Index all flagged rows", key="chroma_btn_idx_flag")
             with cc3:
-                chroma_k = st.number_input(
-                    "k per flagged txn", min_value=1, max_value=25, value=5, key="chroma_k"
-                )
+                chroma_k = st.number_input("k per flagged txn", min_value=1, max_value=25, value=5, key="chroma_k")
             with cc4:
-                chroma_gk = st.number_input(
-                    "k for global KB", min_value=1, max_value=30, value=12, key="chroma_gk"
-                )
+                chroma_gk = st.number_input("k for global KB", min_value=1, max_value=30, value=12, key="chroma_gk")
 
             push_map = st.button("Chroma → KB map (fills RAG textarea)", key="chroma_push_map")
             push_glob = st.button("Chroma → global CFO KB", key="chroma_push_global")
 
             if upsert_pat:
-                n_up, err = parse_and_upsert_learned_json(
-                    st.session_state.get("chroma_patterns_json") or "[]"
-                )
+                n_up, err = parse_and_upsert_learned_json(st.session_state.get("chroma_patterns_json") or "[]")
                 if err:
                     st.error(f"Invalid JSON: {err}")
                 elif n_up == 0:
-                    st.warning(
-                        "Nothing to upsert (empty `text_for_embedding` or not an array of objects)."
-                    )
+                    st.warning("Nothing to upsert (empty `text_for_embedding` or not an array of objects).")
                 else:
                     st.success(f"Upserted {n_up} pattern document(s) into Chroma.")
 
@@ -928,12 +917,8 @@ def _render_step_analyze(raw_records: list[dict[str, Any]]) -> None:
                         k_per_txn=int(chroma_k),
                         max_flagged=200,
                     )
-                    st.session_state["rag_kb_map_json"] = json.dumps(
-                        kb_m, ensure_ascii=False, indent=2
-                    )
-                    st.success(
-                        "KB map updated. Open **RAG: explain each flagged transaction** below if needed."
-                    )
+                    st.session_state["rag_kb_map_json"] = json.dumps(kb_m, ensure_ascii=False, indent=2)
+                    st.success("KB map updated. Scroll to **RAG: explain each flagged transaction** if needed.")
                 except ValueError as exc:
                     st.error(str(exc))
                 except Exception as exc:  # noqa: BLE001
@@ -942,13 +927,9 @@ def _render_step_analyze(raw_records: list[dict[str, Any]]) -> None:
             if push_glob:
                 try:
                     gkb = global_kb_from_chroma_for_flagged(scored_df, k=int(chroma_gk))
-                    st.session_state["_pending_cfo_kb_global_json"] = json.dumps(
-                        gkb, ensure_ascii=False, indent=2
-                    )
+                    st.session_state["_pending_cfo_kb_global_json"] = json.dumps(gkb, ensure_ascii=False, indent=2)
                     st.session_state["_pending_cfo_use_kb_global"] = True
-                    st.success(
-                        "Global KB JSON updated; CFO KB checkbox will be enabled after refresh."
-                    )
+                    st.success("Global KB JSON updated; CFO KB checkbox will be enabled after refresh.")
                     st.rerun()
                 except ValueError as exc:
                     st.error(str(exc))
@@ -966,34 +947,13 @@ def _render_step_analyze(raw_records: list[dict[str, Any]]) -> None:
                 key="rag_kb_map_json",
                 height=180,
             )
-            rg1, rg2, rg3 = st.columns(3)
-            with rg1:
-                max_rag = st.number_input(
-                    "Max flagged rows",
-                    min_value=1,
-                    max_value=500,
-                    value=35,
-                    step=1,
-                    key="rag_max_rows",
-                )
-            with rg2:
-                rag_chunk = st.number_input(
-                    "Rows per API batch",
-                    min_value=1,
-                    max_value=25,
-                    value=10,
-                    step=1,
-                    key="rag_chunk",
-                )
-            with rg3:
-                rag_kb_cap = st.number_input(
-                    "Max KB hits per row",
-                    min_value=0,
-                    max_value=20,
-                    value=5,
-                    step=1,
-                    key="rag_kb_cap",
-                )
+            r1, r2, r3 = st.columns(3)
+            with r1:
+                max_rag = st.number_input("Max flagged rows", min_value=1, max_value=500, value=35, step=1, key="rag_max_rows")
+            with r2:
+                rag_chunk = st.number_input("Rows per API batch", min_value=1, max_value=25, value=10, step=1, key="rag_chunk")
+            with r3:
+                rag_kb_cap = st.number_input("Max KB hits per row", min_value=0, max_value=20, value=5, step=1, key="rag_kb_cap")
 
             col_rg1, col_rg2 = st.columns([1, 2])
             with col_rg1:
@@ -1032,9 +992,7 @@ def _render_step_analyze(raw_records: list[dict[str, Any]]) -> None:
                             else:
                                 merged = attach_kb_by_transaction_id(items, kb_map)
                                 try:
-                                    with st.spinner(
-                                        "Calling OpenAI for per-transaction RAG explanations…"
-                                    ):
+                                    with st.spinner("Calling OpenAI for per-transaction RAG explanations…"):
                                         rag_md = generate_flagged_rag_explanations(
                                             merged,
                                             chunk_size=int(rag_chunk),
