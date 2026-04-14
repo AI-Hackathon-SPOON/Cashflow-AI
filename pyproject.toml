@@ -5,6 +5,14 @@ description = "Streamlit cashflow monitor with multi-format transaction mapping,
 readme = "README.md"
 requires-python = ">=3.11"
 dependencies = [
+    "annotated-types>=0.6.0",
+    "beautifulsoup4>=4.12.0",
+    "chromadb>=0.5.23",
+    "markdown>=3.5",
+    "networkx>=3.2.1",
+    "openai>=1.40.0",
     "pandas>=3.0.2",
-    "streamlit>=1.56.0",
+    "python-docx>=1.1.0",
+    "streamlit[pdf]>=1.56.0",
+    "xhtml2pdf>=0.2.15",
 ]
